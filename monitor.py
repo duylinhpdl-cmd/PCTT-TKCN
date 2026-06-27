@@ -1,6 +1,7 @@
 """
 🌀 Storm Monitor Bot - Theo dõi áp thấp / bão Thái Bình Dương → Biển Đông
-Chạy trên GitHub Actions (miễn phí), gửi cảnh báo qua Telegram
+Nguồn: NCHMF, JTWC, JMA, NHC, VnExpress, 24h, Dân Trí, Tuổi Trẻ, Thanh Niên
+Thời gian hiển thị theo giờ Việt Nam (UTC+7)
 """
 
 import os
@@ -8,39 +9,65 @@ import json
 import requests
 import re
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
 from xml.etree import ElementTree as ET
 
 # ── Cấu hình ──────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-STATE_FILE         = "state.json"   # Lưu trạng thái để không gửi trùng
+STATE_FILE         = "state.json"
 
-# Vùng Biển Đông + khu vực có khả năng ảnh hưởng (lon/lat bounding box)
-BIEN_DONG = {"lat_min": 5, "lat_max": 25, "lon_min": 100, "lon_max": 125}
-# Khu vực Thái Bình Dương "nguy hiểm" (có thể di chuyển vào Biển Đông)
-WATCH_ZONE = {"lat_min": 5, "lat_max": 30, "lon_min": 100, "lon_max": 155}
+VN_TZ   = timezone(timedelta(hours=7))   # UTC+7 giờ Việt Nam
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StormMonitorBot/1.0)"}
+BIEN_DONG  = {"lat_min": 5,  "lat_max": 25, "lon_min": 100, "lon_max": 125}
+WATCH_ZONE = {"lat_min": 5,  "lat_max": 30, "lon_min": 100, "lon_max": 155}
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    )
+}
+
+# Từ khoá lọc bài báo tiếng Việt
+VN_KEYWORDS = [
+    "áp thấp nhiệt đới", "áp thấp", "bão số",
+    "cơn bão", "bão nhiệt đới", "bão mạnh",
+    "vùng áp thấp", "nhiễu động nhiệt đới",
+    "biển đông", "đổ bộ", "ảnh hưởng bão",
+    "cảnh báo bão", "tin bão khẩn",
+]
 
 # ── Tiện ích ───────────────────────────────────────────────────────────────────
+def now_vn():
+    """Trả về thời gian hiện tại theo giờ Việt Nam."""
+    return datetime.now(VN_TZ)
+
+def fmt_time_vn():
+    return now_vn().strftime("%d/%m/%Y %H:%M (GMT+7)")
+
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
+        with open(STATE_FILE, encoding="utf-8") as f:
             return json.load(f)
     return {"sent_ids": []}
 
 def save_state(state):
-    with open(STATE_FILE, "w") as f:
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 def make_id(text):
     return hashlib.md5(text.encode()).hexdigest()[:12]
 
+def has_keyword(text):
+    t = text.lower()
+    return any(kw in t for kw in VN_KEYWORDS)
+
 def send_telegram(msg):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[Telegram] Chưa cấu hình token/chat_id — in ra console:")
+        print("[Telegram] Chưa cấu hình — in console:")
         print(msg)
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -52,128 +79,238 @@ def send_telegram(msg):
     }
     r = requests.post(url, json=payload, timeout=15)
     if r.status_code == 200:
-        print("[Telegram] ✅ Đã gửi cảnh báo")
+        print("[Telegram] ✅ Đã gửi")
     else:
-        print(f"[Telegram] ❌ Lỗi: {r.text}")
+        print(f"[Telegram] ❌ {r.status_code}: {r.text[:200]}")
 
 def in_watch_zone(lat, lon):
+    if lat is None or lon is None:
+        return False
     z = WATCH_ZONE
     return z["lat_min"] <= lat <= z["lat_max"] and z["lon_min"] <= lon <= z["lon_max"]
 
 def in_bien_dong(lat, lon):
+    if lat is None or lon is None:
+        return False
     z = BIEN_DONG
     return z["lat_min"] <= lat <= z["lat_max"] and z["lon_min"] <= lon <= z["lon_max"]
 
-# ── Nguồn 1: NCHMF (Trung tâm KTTV Quốc gia VN) ──────────────────────────────
+def get_page(url, timeout=15):
+    r = requests.get(url, headers=HEADERS, timeout=timeout)
+    r.encoding = r.apparent_encoding or "utf-8"
+    return BeautifulSoup(r.text, "html.parser")
+
+# ── Nguồn 1: NCHMF ────────────────────────────────────────────────────────────
 def scrape_nchmf():
     alerts = []
     urls = [
         "https://nchmf.gov.vn/Kttvsite/vi-VN/1/tin-bao-khan-cap-post.html",
         "https://nchmf.gov.vn/Kttvsite/vi-VN/1/tin-ap-thap-nhiet-doi-post.html",
     ]
-    keywords = [
-        "áp thấp", "áp thấp nhiệt đới", "bão", "cơn bão",
-        "vùng áp thấp", "nhiễu động nhiệt đới"
+    for url in urls:
+        try:
+            soup = get_page(url)
+            for a in soup.select("a")[:20]:
+                text = a.get_text(strip=True)
+                href = a.get("href", "")
+                if len(text) < 10:
+                    continue
+                if has_keyword(text):
+                    full = href if href.startswith("http") else "https://nchmf.gov.vn" + href
+                    alerts.append({"source": "NCHMF 🏛️", "title": text, "url": full,
+                                   "id": make_id(text), "lat": None, "lon": None})
+        except Exception as e:
+            print(f"[NCHMF] {e}")
+    return alerts
+
+# ── Nguồn 2: VnExpress ────────────────────────────────────────────────────────
+def scrape_vnexpress():
+    alerts = []
+    # VnExpress RSS thời tiết
+    rss_urls = [
+        "https://vnexpress.net/rss/thoi-tiet.rss",
+        "https://vnexpress.net/rss/tin-tuc-su-kien.rss",
+    ]
+    for rss in rss_urls:
+        try:
+            r = requests.get(rss, headers=HEADERS, timeout=15)
+            root = ET.fromstring(r.content)
+            for item in root.findall(".//item"):
+                title = (item.findtext("title") or "").strip()
+                link  = (item.findtext("link")  or "").strip()
+                desc  = (item.findtext("description") or "").strip()
+                combined = title + " " + desc
+                if has_keyword(combined):
+                    alerts.append({
+                        "source": "VnExpress 📰",
+                        "title": title,
+                        "url": link,
+                        "id": make_id(title),
+                        "lat": None, "lon": None,
+                    })
+        except Exception as e:
+            print(f"[VnExpress] {e}")
+    return alerts
+
+# ── Nguồn 3: 24h.com.vn ───────────────────────────────────────────────────────
+def scrape_24h():
+    alerts = []
+    urls = [
+        "https://www.24h.com.vn/thoi-tiet-c270.html",
+        "https://www.24h.com.vn/tin-tuc-trong-ngay-c46.html",
     ]
     for url in urls:
         try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            soup = BeautifulSoup(r.text, "html.parser")
-            # Tìm các bản tin mới nhất
-            items = soup.select("a.title, h3 a, .post-title a, article a")[:10]
-            for item in items:
-                text = item.get_text(strip=True)
-                href = item.get("href", "")
-                if any(kw in text.lower() for kw in keywords):
-                    full_url = href if href.startswith("http") else "https://nchmf.gov.vn" + href
+            soup = get_page(url)
+            # 24h dùng nhiều class khác nhau, tìm tất cả thẻ a có title dài
+            for a in soup.find_all("a", href=True):
+                text = a.get("title", "") or a.get_text(strip=True)
+                href = a.get("href", "")
+                if len(text) < 15:
+                    continue
+                if has_keyword(text):
+                    full = href if href.startswith("http") else "https://www.24h.com.vn" + href
                     alerts.append({
-                        "source": "NCHMF",
-                        "title": text,
-                        "url": full_url,
+                        "source": "24h.com.vn 📡",
+                        "title": text[:200],
+                        "url": full,
                         "id": make_id(text),
                         "lat": None, "lon": None,
-                        "in_zone": True,  # NCHMF chỉ đăng khi ảnh hưởng VN
                     })
         except Exception as e:
-            print(f"[NCHMF] Lỗi: {e}")
+            print(f"[24h] {e}")
     return alerts
 
-# ── Nguồn 2: JTWC RSS (Trung tâm Cảnh báo Bão Hải quân Mỹ) ──────────────────
+# ── Nguồn 4: Dân Trí ──────────────────────────────────────────────────────────
+def scrape_dantri():
+    alerts = []
+    rss_urls = [
+        "https://dantri.com.vn/suc-manh-so.rss",   # fallback
+        "https://dantri.com.vn/xa-hoi.rss",
+    ]
+    # Trang web thường
+    web_urls = [
+        "https://dantri.com.vn/xa-hoi/thoi-tiet.htm",
+    ]
+    for rss in rss_urls:
+        try:
+            r = requests.get(rss, headers=HEADERS, timeout=15)
+            root = ET.fromstring(r.content)
+            for item in root.findall(".//item"):
+                title = (item.findtext("title") or "").strip()
+                link  = (item.findtext("link")  or "").strip()
+                desc  = BeautifulSoup(item.findtext("description") or "", "html.parser").get_text()
+                if has_keyword(title + " " + desc):
+                    alerts.append({
+                        "source": "Dân Trí 📰",
+                        "title": title,
+                        "url": link,
+                        "id": make_id(title),
+                        "lat": None, "lon": None,
+                    })
+        except Exception as e:
+            print(f"[DanTri RSS] {e}")
+    for url in web_urls:
+        try:
+            soup = get_page(url)
+            for a in soup.find_all("a", href=True):
+                text = a.get_text(strip=True)
+                href = a.get("href", "")
+                if len(text) < 15:
+                    continue
+                if has_keyword(text):
+                    full = href if href.startswith("http") else "https://dantri.com.vn" + href
+                    alerts.append({
+                        "source": "Dân Trí 📰",
+                        "title": text[:200],
+                        "url": full,
+                        "id": make_id(text),
+                        "lat": None, "lon": None,
+                    })
+        except Exception as e:
+            print(f"[DanTri web] {e}")
+    return alerts
+
+# ── Nguồn 5: Tuổi Trẻ Online ──────────────────────────────────────────────────
+def scrape_tuoitre():
+    alerts = []
+    rss_urls = [
+        "https://tuoitre.vn/rss/thoi-su.rss",
+        "https://tuoitre.vn/rss/tin-moi-nhat.rss",
+    ]
+    for rss in rss_urls:
+        try:
+            r = requests.get(rss, headers=HEADERS, timeout=15)
+            root = ET.fromstring(r.content)
+            for item in root.findall(".//item"):
+                title = (item.findtext("title") or "").strip()
+                link  = (item.findtext("link")  or "").strip()
+                desc  = BeautifulSoup(item.findtext("description") or "", "html.parser").get_text()
+                if has_keyword(title + " " + desc):
+                    alerts.append({
+                        "source": "Tuổi Trẻ 📰",
+                        "title": title,
+                        "url": link,
+                        "id": make_id(title),
+                        "lat": None, "lon": None,
+                    })
+        except Exception as e:
+            print(f"[TuoiTre] {e}")
+    return alerts
+
+# ── Nguồn 6: Thanh Niên ───────────────────────────────────────────────────────
+def scrape_thanhnien():
+    alerts = []
+    rss_urls = [
+        "https://thanhnien.vn/rss/thoi-su.rss",
+        "https://thanhnien.vn/rss/home.rss",
+    ]
+    for rss in rss_urls:
+        try:
+            r = requests.get(rss, headers=HEADERS, timeout=15)
+            root = ET.fromstring(r.content)
+            for item in root.findall(".//item"):
+                title = (item.findtext("title") or "").strip()
+                link  = (item.findtext("link")  or "").strip()
+                desc  = BeautifulSoup(item.findtext("description") or "", "html.parser").get_text()
+                if has_keyword(title + " " + desc):
+                    alerts.append({
+                        "source": "Thanh Niên 📰",
+                        "title": title,
+                        "url": link,
+                        "id": make_id(title),
+                        "lat": None, "lon": None,
+                    })
+        except Exception as e:
+            print(f"[ThanhNien] {e}")
+    return alerts
+
+# ── Nguồn 7: JTWC RSS ─────────────────────────────────────────────────────────
 def scrape_jtwc():
     alerts = []
     url = "https://www.metoc.navy.mil/jtwc/rss/jtwc.rss"
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
         root = ET.fromstring(r.content)
-        ns = ""
-        items = root.findall(f".//{ns}item")
-        for item in items:
-            title = (item.findtext(f"{ns}title") or "").strip()
-            desc  = (item.findtext(f"{ns}description") or "").strip()
-            link  = (item.findtext(f"{ns}link") or "").strip()
+        for item in root.findall(".//item"):
+            title = (item.findtext("title") or "").strip()
+            desc  = (item.findtext("description") or "").strip()
+            link  = (item.findtext("link") or "").strip()
             text  = title + " " + desc
-
-            # Chỉ quan tâm WP (Western Pacific) basin
-            if not ("WP" in title or "WESTERN PACIFIC" in text.upper() or "WEST PACIFIC" in text.upper()):
+            if not ("WP" in title or "WESTERN PACIFIC" in text.upper()):
                 continue
-
-            # Trích tọa độ từ mô tả
             lat, lon = parse_coords(text)
-
-            keywords = ["TROPICAL DEPRESSION", "TROPICAL STORM", "TYPHOON",
-                        "DISTURBANCE", "LOW", "REMNANTS"]
-            if any(kw in text.upper() for kw in keywords):
-                in_zone = in_watch_zone(lat, lon) if (lat and lon) else True
-                if in_zone:
-                    alerts.append({
-                        "source": "JTWC",
-                        "title": title,
-                        "url": link,
-                        "id": make_id(title),
-                        "lat": lat, "lon": lon,
-                        "in_zone": in_zone,
-                        "desc": desc[:300],
-                    })
+            kws = ["TROPICAL DEPRESSION","TROPICAL STORM","TYPHOON","DISTURBANCE","LOW"]
+            if any(k in text.upper() for k in kws):
+                if in_watch_zone(lat, lon) or (lat is None):
+                    alerts.append({"source": "JTWC 🇺🇸", "title": title,
+                                   "url": link, "id": make_id(title),
+                                   "lat": lat, "lon": lon})
     except Exception as e:
-        print(f"[JTWC] Lỗi: {e}")
+        print(f"[JTWC] {e}")
     return alerts
 
-# ── Nguồn 3: Weather Underground / TWC Typhoon Tracker ────────────────────────
-def scrape_twc_pacific():
-    alerts = []
-    # TWC Active Storms API (public)
-    url = "https://api.weather.com/v3/TropicalWeather/Outlook;basin=EP,CP,WP/en-US.json"
-    # Thay bằng NHC / JMA nếu cần
-    try:
-        r = requests.get(
-            "https://www.nhc.noaa.gov/productlist.shtml",
-            headers=HEADERS, timeout=15
-        )
-        soup = BeautifulSoup(r.text, "html.parser")
-        rows = soup.select("table tr")
-        for row in rows:
-            cells = row.find_all("td")
-            if not cells:
-                continue
-            text = " ".join(c.get_text() for c in cells)
-            if any(kw in text.upper() for kw in ["WESTERN PACIFIC", "WESTERN PAC", "WP"]):
-                link_el = row.find("a")
-                link = "https://www.nhc.noaa.gov" + link_el["href"] if link_el else ""
-                if any(kw in text.upper() for kw in
-                       ["DEPRESSION", "STORM", "TYPHOON", "DISTURBANCE"]):
-                    alerts.append({
-                        "source": "NHC/NOAA",
-                        "title": text[:120].strip(),
-                        "url": link,
-                        "id": make_id(text[:80]),
-                        "lat": None, "lon": None,
-                        "in_zone": True,
-                    })
-    except Exception as e:
-        print(f"[NHC] Lỗi: {e}")
-    return alerts
-
-# ── Nguồn 4: JMA (Japan Meteorological Agency) XML ────────────────────────────
+# ── Nguồn 8: JMA JSON ─────────────────────────────────────────────────────────
 def scrape_jma():
     alerts = []
     url = "https://www.jma.go.jp/bosai/typhoon/data/tropicalCyclone.json"
@@ -184,130 +321,135 @@ def scrape_jma():
         if isinstance(storms, dict):
             storms = [storms]
         for storm in storms:
-            name = storm.get("name", {}).get("en", "Unknown")
+            name      = storm.get("name", {}).get("en", "Unknown")
             intensity = storm.get("intensity", {}).get("description", {}).get("en", "")
-            # Lấy vị trí mới nhất
-            positions = storm.get("currentPosition", {})
-            lat_str = positions.get("latitude", "")
-            lon_str = positions.get("longitude", "")
-            lat = parse_lat(lat_str)
-            lon = parse_lon(lon_str)
-
-            if lat is None or lon is None:
-                continue
+            pos       = storm.get("currentPosition", {})
+            lat       = parse_num(pos.get("latitude", ""))
+            lon       = parse_num(pos.get("longitude", ""))
             if not in_watch_zone(lat, lon):
                 continue
-
-            in_bd = in_bien_dong(lat, lon)
             direction = storm.get("movement", {}).get("direction", {}).get("en", "")
-
-            title = f"JMA: {intensity} {name} ({lat}°N {lon}°E) → {direction}"
+            title = f"[JMA] {intensity} {name} tại {lat}°N {lon}°E → {direction}"
             alerts.append({
-                "source": "JMA",
-                "title": title,
+                "source": "JMA 🇯🇵", "title": title,
                 "url": "https://www.jma.go.jp/en/typh/",
-                "id": make_id(title),
-                "lat": lat, "lon": lon,
-                "in_zone": True,
-                "in_bien_dong": in_bd,
-                "intensity": intensity,
-                "name": name,
+                "id": make_id(title), "lat": lat, "lon": lon,
+                "in_bien_dong": in_bien_dong(lat, lon),
             })
     except Exception as e:
-        print(f"[JMA] Lỗi: {e}")
+        print(f"[JMA] {e}")
     return alerts
 
-# ── Helper: parse tọa độ ───────────────────────────────────────────────────────
+# ── Nguồn 9: NHC/NOAA ────────────────────────────────────────────────────────
+def scrape_nhc():
+    alerts = []
+    try:
+        soup = get_page("https://www.nhc.noaa.gov/productlist.shtml")
+        for row in soup.select("table tr"):
+            cells = row.find_all("td")
+            if not cells:
+                continue
+            text = " ".join(c.get_text() for c in cells)
+            if any(k in text.upper() for k in ["WESTERN PACIFIC", "WP"]):
+                kws = ["DEPRESSION","STORM","TYPHOON","DISTURBANCE"]
+                if any(k in text.upper() for k in kws):
+                    a = row.find("a")
+                    link = ("https://www.nhc.noaa.gov" + a["href"]) if a else ""
+                    alerts.append({"source": "NHC/NOAA 🇺🇸", "title": text[:120].strip(),
+                                   "url": link, "id": make_id(text[:80]),
+                                   "lat": None, "lon": None})
+    except Exception as e:
+        print(f"[NHC] {e}")
+    return alerts
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def parse_coords(text):
-    """Tìm lat/lon dạng '15.2N 132.5E' hoặc '15N 130E' trong văn bản"""
     m = re.search(r"(\d+\.?\d*)\s*[Nn]\s+(\d+\.?\d*)\s*[Ee]", text)
     if m:
         return float(m.group(1)), float(m.group(2))
     return None, None
 
-def parse_lat(s):
+def parse_num(s):
     m = re.search(r"(\d+\.?\d*)", str(s))
     return float(m.group(1)) if m else None
 
-def parse_lon(s):
-    m = re.search(r"(\d+\.?\d*)", str(s))
-    return float(m.group(1)) if m else None
-
-# ── Định dạng tin nhắn cảnh báo ───────────────────────────────────────────────
+# ── Format tin nhắn ───────────────────────────────────────────────────────────
 def format_alert(alert):
-    ts = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
-    src = alert.get("source", "?")
-    title = alert.get("title", "")
-    url = alert.get("url", "")
-    lat = alert.get("lat")
-    lon = alert.get("lon")
-    intensity = alert.get("intensity", "")
-    in_bd = alert.get("in_bien_dong", False)
+    title   = alert.get("title", "")
+    src     = alert.get("source", "?")
+    url     = alert.get("url", "")
+    lat     = alert.get("lat")
+    lon     = alert.get("lon")
+    in_bd   = alert.get("in_bien_dong", False)
 
-    # Chọn emoji theo mức độ
-    if any(k in title.upper() for k in ["TYPHOON", "BÃO"]):
+    # Icon theo mức độ
+    t_up = title.upper()
+    if any(k in t_up for k in ["TYPHOON", "BÃO SỐ", "CƠN BÃO"]):
         icon = "🌀"
-    elif any(k in title.upper() for k in ["TROPICAL STORM", "BÃO NHIỆT ĐỚI"]):
+    elif any(k in t_up for k in ["TROPICAL STORM", "BÃO NHIỆT ĐỚI", "BÃO MẠNH"]):
         icon = "🌪️"
-    elif any(k in title.upper() for k in ["DEPRESSION", "ÁP THẤP NHIỆT ĐỚI"]):
+    elif any(k in t_up for k in ["DEPRESSION", "ÁP THẤP NHIỆT ĐỚI"]):
         icon = "⚠️"
-    else:
+    elif any(k in t_up for k in ["ÁP THẤP", "VÙNG ÁP THẤP"]):
         icon = "🔵"
+    else:
+        icon = "📢"
 
-    zone_note = ""
+    zone = ""
     if in_bd:
-        zone_note = "\n🇻🇳 <b>ĐANG Ở BIỂN ĐÔNG</b> — nguy cơ ảnh hưởng trực tiếp!"
+        zone = "\n🇻🇳 <b>ĐANG Ở BIỂN ĐÔNG</b> — nguy cơ ảnh hưởng trực tiếp!"
     elif lat and lon:
-        zone_note = f"\n📍 Vị trí: {lat:.1f}°N, {lon:.1f}°E (khu vực theo dõi TBD)"
+        zone = f"\n📍 Vị trí: {lat:.1f}°N, {lon:.1f}°E"
 
     msg = (
         f"{icon} <b>CẢNH BÁO THỜI TIẾT</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📡 Nguồn: <b>{src}</b>\n"
-        f"🕐 Thời gian: {ts}\n"
+        f"🕐 {fmt_time_vn()}\n"
         f"📋 {title}"
-        f"{zone_note}\n"
+        f"{zone}\n"
         f"━━━━━━━━━━━━━━━━━━"
     )
     if url:
         msg += f"\n🔗 <a href='{url}'>Xem chi tiết</a>"
     return msg
 
-# ── Chạy chính ─────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    print(f"[Bot] Bắt đầu quét lúc {datetime.now(timezone.utc).isoformat()}")
-    state = load_state()
+    print(f"[Bot] Bắt đầu lúc {fmt_time_vn()}")
+    state    = load_state()
     sent_ids = set(state.get("sent_ids", []))
 
-    # Thu thập từ tất cả nguồn
     all_alerts = []
     all_alerts += scrape_nchmf()
+    all_alerts += scrape_vnexpress()
+    all_alerts += scrape_24h()
+    all_alerts += scrape_dantri()
+    all_alerts += scrape_tuoitre()
+    all_alerts += scrape_thanhnien()
     all_alerts += scrape_jtwc()
-    all_alerts += scrape_twc_pacific()
     all_alerts += scrape_jma()
+    all_alerts += scrape_nhc()
 
-    print(f"[Bot] Tìm thấy {len(all_alerts)} cảnh báo tiềm năng")
+    print(f"[Bot] Tổng tìm thấy: {len(all_alerts)} mục")
 
     new_sent = []
     for alert in all_alerts:
         aid = alert["id"]
         if aid in sent_ids:
-            print(f"[Bot] Bỏ qua (đã gửi): {alert['title'][:60]}")
             continue
-        print(f"[Bot] 🚨 Gửi cảnh báo: {alert['title'][:60]}")
-        msg = format_alert(alert)
-        send_telegram(msg)
+        print(f"[Bot] 🚨 Gửi: {alert['title'][:70]}")
+        send_telegram(format_alert(alert))
         new_sent.append(aid)
 
-    if not all_alerts or not new_sent:
+    if not new_sent:
         print("[Bot] ✅ Không có cảnh báo mới.")
 
-    # Cập nhật state (giữ tối đa 200 ID)
-    all_ids = list(sent_ids) + new_sent
-    state["sent_ids"] = all_ids[-200:]
-    state["last_run"] = datetime.now(timezone.utc).isoformat()
+    state["sent_ids"] = (list(sent_ids) + new_sent)[-300:]
+    state["last_run_vn"] = fmt_time_vn()
+    state["last_run_utc"] = datetime.now(timezone.utc).isoformat()
     save_state(state)
-    print("[Bot] Hoàn tất.")
+    print("[Bot] Xong.")
 
 if __name__ == "__main__":
     main()
