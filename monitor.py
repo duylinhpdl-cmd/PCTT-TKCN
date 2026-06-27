@@ -329,7 +329,9 @@ def scrape_jma():
             if not in_watch_zone(lat, lon):
                 continue
             direction = storm.get("movement", {}).get("direction", {}).get("en", "")
-            title = f"[JMA] {intensity} {name} tại {lat}°N {lon}°E → {direction}"
+            cuong_do_vi = next((vi for en, vi in INTENSITY_VI if en.upper() in intensity.upper()), intensity)
+            huong_vi = DIRECTION_VI.get(direction.upper().strip(), direction)
+            title = f"{cuong_do_vi} {name} — vị trí {lat}°N {lon}°E, di chuyển về hướng {huong_vi}"
             alerts.append({
                 "source": "JMA 🇯🇵", "title": title,
                 "url": "https://www.jma.go.jp/en/typh/",
@@ -373,45 +375,116 @@ def parse_num(s):
     m = re.search(r"(\d+\.?\d*)", str(s))
     return float(m.group(1)) if m else None
 
-# ── Format tin nhắn ───────────────────────────────────────────────────────────
+# Bảng dịch cường độ bão tiếng Anh → tiếng Việt
+INTENSITY_VI = [
+    ("SUPER TYPHOON",       "Siêu bão"),
+    ("SEVERE TYPHOON",      "Bão dữ dội"),
+    ("TYPHOON",             "Bão lớn"),
+    ("TROPICAL STORM",      "Bão nhiệt đới"),
+    ("TROPICAL DEPRESSION", "Áp thấp nhiệt đới"),
+    ("DISTURBANCE",         "Nhiễu động nhiệt đới"),
+    ("REMNANTS",            "Tàn dư áp thấp"),
+    ("LOW",                 "Vùng áp thấp"),
+]
+
+# Bảng dịch hướng di chuyển
+DIRECTION_VI = {
+    "N":"Bắc","NNE":"Bắc-Đông Bắc","NE":"Đông Bắc","ENE":"Đông-Đông Bắc",
+    "E":"Đông","ESE":"Đông-Đông Nam","SE":"Đông Nam","SSE":"Nam-Đông Nam",
+    "S":"Nam","SSW":"Nam-Tây Nam","SW":"Tây Nam","WSW":"Tây-Tây Nam",
+    "W":"Tây","WNW":"Tây-Tây Bắc","NW":"Tây Bắc","NNW":"Bắc-Tây Bắc",
+    "STATIONARY":"Đứng yên",
+}
+
+def dich_tieu_de(text):
+    """Dịch các thuật ngữ bão tiếng Anh sang tiếng Việt trong tiêu đề."""
+    result = text
+    for en, vi in INTENSITY_VI:
+        result = re.sub(en, vi, result, flags=re.IGNORECASE)
+    for en, vi in DIRECTION_VI.items():
+        result = re.sub(rf"\b{en}\b", vi, result)
+    return result
+
+def cap_do_canh_bao(title):
+    """Trả về (icon, tên cấp độ tiếng Việt, level) dựa trên tiêu đề."""
+    t = title.upper()
+    if "SUPER TYPHOON" in t or "SIÊU BÃO" in t:
+        return "🌀🌀", "SIÊU BÃO", "danger"
+    if "SEVERE TYPHOON" in t:
+        return "🌀", "BÃO DỮ DỘI", "danger"
+    if any(k in t for k in ["TYPHOON","BÃO SỐ","CƠN BÃO","BÃO MẠNH","BÃO LỚN"]):
+        return "🌀", "BÃO", "high"
+    if any(k in t for k in ["TROPICAL STORM","BÃO NHIỆT ĐỚI"]):
+        return "🌪️", "BÃO NHIỆT ĐỚI", "medium"
+    if any(k in t for k in ["TROPICAL DEPRESSION","ÁP THẤP NHIỆT ĐỚI"]):
+        return "⚠️", "ÁP THẤP NHIỆT ĐỚI", "medium"
+    if any(k in t for k in ["DISTURBANCE","NHIỄU ĐỘNG"]):
+        return "🔵", "NHIỄU ĐỘNG NHIỆT ĐỚI", "low"
+    if any(k in t for k in ["LOW","ÁP THẤP","VÙNG ÁP THẤP"]):
+        return "🔵", "VÙNG ÁP THẤP", "low"
+    return "📢", "THÔNG BÁO THỜI TIẾT", "info"
+
+# Tên nguồn tiếng Việt
+NGUON_VI = {
+    "NCHMF 🏛️":     "Trung tâm Khí tượng Thủy văn Quốc gia",
+    "VnExpress 📰":  "Báo VnExpress",
+    "24h.com.vn 📡": "Báo 24h",
+    "Dân Trí 📰":    "Báo Dân Trí",
+    "Tuổi Trẻ 📰":   "Báo Tuổi Trẻ",
+    "Thanh Niên 📰": "Báo Thanh Niên",
+    "JTWC 🇺🇸":      "Trung tâm Cảnh báo Bão Hải quân Mỹ",
+    "JMA 🇯🇵":       "Cơ quan Khí tượng Nhật Bản",
+    "NHC/NOAA 🇺🇸":  "Trung tâm Bão Quốc gia Mỹ (NOAA)",
+}
+
+# ── Format tin nhắn hoàn toàn tiếng Việt ──────────────────────────────────────
 def format_alert(alert):
-    title   = alert.get("title", "")
-    src     = alert.get("source", "?")
-    url     = alert.get("url", "")
-    lat     = alert.get("lat")
-    lon     = alert.get("lon")
-    in_bd   = alert.get("in_bien_dong", False)
+    title  = alert.get("title", "")
+    src    = alert.get("source", "?")
+    url    = alert.get("url", "")
+    lat    = alert.get("lat")
+    lon    = alert.get("lon")
+    in_bd  = alert.get("in_bien_dong", False)
 
-    # Icon theo mức độ
-    t_up = title.upper()
-    if any(k in t_up for k in ["TYPHOON", "BÃO SỐ", "CƠN BÃO"]):
-        icon = "🌀"
-    elif any(k in t_up for k in ["TROPICAL STORM", "BÃO NHIỆT ĐỚI", "BÃO MẠNH"]):
-        icon = "🌪️"
-    elif any(k in t_up for k in ["DEPRESSION", "ÁP THẤP NHIỆT ĐỚI"]):
-        icon = "⚠️"
-    elif any(k in t_up for k in ["ÁP THẤP", "VÙNG ÁP THẤP"]):
-        icon = "🔵"
-    else:
-        icon = "📢"
+    icon, cap_do, level = cap_do_canh_bao(title)
+    ten_nguon = NGUON_VI.get(src, src)
+    tieu_de   = dich_tieu_de(title)
 
-    zone = ""
+    # Vị trí / cảnh báo vùng
     if in_bd:
-        zone = "\n🇻🇳 <b>ĐANG Ở BIỂN ĐÔNG</b> — nguy cơ ảnh hưởng trực tiếp!"
+        vi_tri = (
+            "🇻🇳 <b>ĐANG Ở BIỂN ĐÔNG</b>\n"
+            "⚡️ Nguy cơ ảnh hưởng trực tiếp đến Việt Nam!"
+        )
     elif lat and lon:
-        zone = f"\n📍 Vị trí: {lat:.1f}°N, {lon:.1f}°E"
+        vi_tri = f"📍 Vị trí: {lat:.1f}°N, {lon:.1f}°E (Tây Thái Bình Dương)"
+    else:
+        vi_tri = "📍 Khu vực: Tây Thái Bình Dương / Biển Đông"
+
+    # Mức độ cảnh báo
+    MUC_DO = {
+        "danger": "🔴 Mức độ: <b>RẤT NGUY HIỂM</b>",
+        "high":   "🟠 Mức độ: <b>NGUY HIỂM</b>",
+        "medium": "🟡 Mức độ: <b>CẦN THEO DÕI</b>",
+        "low":    "🟢 Mức độ: <b>THEO DÕI</b>",
+        "info":   "🔵 Mức độ: <b>THÔNG TIN</b>",
+    }
+    muc_do_str = MUC_DO.get(level, "🔵 Mức độ: <b>THÔNG TIN</b>")
 
     msg = (
-        f"{icon} <b>CẢNH BÁO THỜI TIẾT</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"📡 Nguồn: <b>{src}</b>\n"
-        f"🕐 {fmt_time_vn()}\n"
-        f"📋 {title}"
-        f"{zone}\n"
-        f"━━━━━━━━━━━━━━━━━━"
+        f"{icon} <b>CẢNH BÁO: {cap_do}</b>\n"
+        f"{'━' * 22}\n"
+        f"📋 {tieu_de}\n"
+        f"\n"
+        f"{muc_do_str}\n"
+        f"{vi_tri}\n"
+        f"\n"
+        f"📡 Nguồn: {ten_nguon}\n"
+        f"🕐 Cập nhật: {fmt_time_vn()}\n"
+        f"{'━' * 22}"
     )
     if url:
-        msg += f"\n🔗 <a href='{url}'>Xem chi tiết</a>"
+        msg += f"\n🔗 <a href='{url}'>Xem bài viết đầy đủ</a>"
     return msg
 
 # ── Main ──────────────────────────────────────────────────────────────────────
