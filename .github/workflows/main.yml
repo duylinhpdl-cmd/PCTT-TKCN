@@ -1,0 +1,48 @@
+name: 🌀 Storm Monitor Bot
+
+on:
+  schedule:
+    # Chạy mỗi giờ (UTC). Điều chỉnh nếu muốn tần suất khác.
+    - cron: "0 * * * *"
+  workflow_dispatch:   # Cho phép chạy thủ công từ tab Actions
+
+permissions:
+  contents: write      # Cần để commit file state.json
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # 1. Checkout code (bao gồm state.json nếu đã có)
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2. Cài Python
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 3. Cài thư viện
+      - name: 📦 Install dependencies
+        run: pip install requests beautifulsoup4 lxml
+
+      # 4. Chạy bot
+      - name: 🌀 Run storm monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python monitor.py
+
+      # 5. Lưu state.json vào repo để không gửi tin trùng
+      - name: 💾 Save state
+        run: |
+          git config user.name  "storm-bot[bot]"
+          git config user.email "storm-bot@noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || git commit -m "chore: update state [skip ci]"
+          git push
