@@ -1,0 +1,30 @@
+name: 🔧 Kiểm tra Bot (Test)
+
+on:
+  workflow_dispatch:   # Chỉ chạy khi bấm thủ công
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Cài thư viện
+        run: pip install requests beautifulsoup4 lxml
+
+      - name: 🔧 Chạy kiểm tra toàn diện
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python test_bot.py
