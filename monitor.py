@@ -532,39 +532,64 @@ def format_bao_cao(all_alerts, new_alerts, gio_bao_cao):
             f"📡 Đã kiểm tra <b>9 nguồn tin</b> trong nước và quốc tế.\n"
         )
     else:
+        def dong_tin(a, max_title=80):
+            """1 dòng: tiêu đề rút gọn + hyperlink + cờ Biển Đông."""
+            bd  = " 🇻🇳" if a.get("in_bien_dong") else ""
+            url = a.get("url", "")
+            tieu = a["title"][:max_title] + ("..." if len(a["title"]) > max_title else "")
+            if url:
+                return f'  • <a href="{url}">{tieu}</a>{bd}\n'
+            return f"  • {tieu}{bd}\n"
+
         # Bão
         if bao:
             msg += f"🌀 <b>BÃO ({len(bao)} hệ thống):</b>\n"
             for a in bao[:3]:
-                bd = " 🇻🇳" if a.get("in_bien_dong") else ""
-                msg += f"  • {a['title'][:90]}{bd}\n"
+                msg += dong_tin(a)
             msg += "\n"
 
-        # Áp thấp nhiệt đới
+        # Áp thấp nhiệt đới / bão nhiệt đới
         if at_nhiet:
             msg += f"⚠️ <b>ÁP THẤP NHIỆT ĐỚI / BÃO NHIỆT ĐỚI ({len(at_nhiet)} hệ thống):</b>\n"
             for a in at_nhiet[:3]:
-                bd = " 🇻🇳" if a.get("in_bien_dong") else ""
-                msg += f"  • {a['title'][:90]}{bd}\n"
+                msg += dong_tin(a)
             msg += "\n"
 
         # Nhiễu động / vùng áp thấp
         if nhieu_dong:
             msg += f"🔵 <b>VÙNG ÁP THẤP / NHIỄU ĐỘNG ({len(nhieu_dong)} khu vực):</b>\n"
-            for a in nhieu_dong[:2]:
-                msg += f"  • {a['title'][:90]}\n"
+            for a in nhieu_dong[:3]:
+                msg += dong_tin(a)
             msg += "\n"
 
         # Hệ thống ở Biển Đông
         if bien_dong:
             msg += "🇻🇳 <b>⚡️ ĐANG Ở BIỂN ĐÔNG:</b>\n"
-            for a in bien_dong[:2]:
-                msg += f"  • {a['title'][:90]}\n"
+            for a in bien_dong[:3]:
+                msg += dong_tin(a)
             msg += "\n"
 
-        # Tin mới so với lần báo cáo trước
+        # Tất cả link nguồn đã thu thập trong báo cáo này
+        tat_ca = bao + at_nhiet + nhieu_dong
+        seen_url = set()
+        ds_link = []
+        for a in tat_ca:
+            url = a.get("url","")
+            if url and url not in seen_url:
+                seen_url.add(url)
+                ds_link.append(a)
+
+        if ds_link:
+            msg += f"📎 <b>Nguồn bài viết ({len(ds_link)} bài):</b>\n"
+            for a in ds_link[:8]:
+                url  = a.get("url","")
+                tieu = a["title"][:70] + ("..." if len(a["title"]) > 70 else "")
+                src  = a.get("source","").split()[0]
+                msg += f'  [{src}] <a href="{url}">{tieu}</a>\n'
+            msg += "\n"
+
         if new_alerts:
-            msg += f"🆕 <b>Tin mới kể từ báo cáo trước:</b> {len(new_alerts)} mục\n\n"
+            msg += f"🆕 <b>Tin mới so với báo cáo trước:</b> {len(new_alerts)} mục\n"
 
     msg += f"{'━' * 24}\n"
     msg += "📡 Nguồn: NCHMF · VnExpress · 24h · Dân Trí · Tuổi Trẻ · Thanh Niên · JTWC · JMA · NOAA\n"
