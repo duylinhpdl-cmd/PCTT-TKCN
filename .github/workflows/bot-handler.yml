@@ -57,7 +57,7 @@ def dich_cuong_do(text):
     if "áp thấp" in text.lower(): return "Vùng áp thấp", 0
     return "Chưa xác định", -1
 
-# ── Telegram API ───────────────────────────────────────────────────────────────
+# ── Telegram API ──────────────────────────────────────────────────────────────
 def tg(method, **p):
     try:
         r = requests.post(f"{API}/{method}", json=p, timeout=15)
@@ -90,12 +90,10 @@ def fetch_rss(url, timeout=8):
     except: return []
 
 def scrape_nhanh_tat_ca():
-    """Thu thập tin từ tất cả nguồn — CHỈ đọc RSS/tiêu đề, không đọc bài."""
     results = []
 
     # 1. NCHMF
     try:
-        from bs4 import BeautifulSoup
         r = requests.get(
             "https://nchmf.gov.vn/Kttvsite/vi-VN/1/tin-bao-khan-cap-post.html",
             headers=HEADERS, timeout=8)
@@ -173,13 +171,12 @@ def scrape_nhanh_tat_ca():
         cap, cap_so = dich_cuong_do(t + d)
         results.append({"src":"JTWC","title":t,"url":u,"cap":cap,"cap_so":cap_so})
 
-    # Lọc trùng theo tiêu đề
+    # Lọc trùng
     seen, unique = set(), []
     for x in results:
         k = x["title"][:50]
         if k not in seen:
             seen.add(k); unique.append(x)
-
     return unique
 
 def phan_loai(items):
@@ -189,7 +186,7 @@ def phan_loai(items):
     return bao, at, nhieu
 
 def dong_tin(x):
-    url = x.get("url","")
+    url  = x.get("url","")
     tieu = x["title"][:90] + ("..." if len(x["title"])>90 else "")
     src  = x.get("src","")
     if url:
@@ -224,7 +221,6 @@ def cmd_kiem_tra(cid):
     typing(cid)
     send(cid, "⏳ Đang quét tất cả 7 nguồn, vui lòng chờ...")
     typing(cid)
-
     items = scrape_nhanh_tat_ca()
     bao, at, nhieu = phan_loai(items)
 
@@ -386,25 +382,25 @@ def xu_ly(upd):
     print(f"[Bot] {cid}: {text[:40]}")
 
     cmd_map = {
-        "/start":                   cmd_start,
-        "/help":                    cmd_start,
-        "🔍 Kiểm tra ngay":          cmd_kiem_tra,
-        "/check":                   cmd_kiem_tra,
-        "📊 Tóm tắt tình hình":     cmd_tom_tat,
-        "/summary":                 cmd_tom_tat,
-        "🌀 Chỉ xem bão/áp thấp":   cmd_bao_ap_thap,
-        "/bao":                     cmd_bao_ap_thap,
-        "📰 Tin báo VN":            cmd_tin_vn,
-        "/vn":                      cmd_tin_vn,
-        "🛰 Nguồn quốc tế":         cmd_tin_qt,
-        "/qt":                      cmd_tin_qt,
-        "ℹ️ Hướng dẫn":             cmd_huong_dan,
-        "/huongdan":                cmd_huong_dan,
+        "/start":                 cmd_start,
+        "/help":                  cmd_start,
+        "🔍 Kiểm tra ngay":       cmd_kiem_tra,
+        "/check":                 cmd_kiem_tra,
+        "📊 Tóm tắt tình hình":   cmd_tom_tat,
+        "/summary":               cmd_tom_tat,
+        "🌀 Chỉ xem bão/áp thấp": cmd_bao_ap_thap,
+        "/bao":                   cmd_bao_ap_thap,
+        "📰 Tin báo VN":          cmd_tin_vn,
+        "/vn":                    cmd_tin_vn,
+        "🛰 Nguồn quốc tế":       cmd_tin_qt,
+        "/qt":                    cmd_tin_qt,
+        "ℹ️ Hướng dẫn":           cmd_huong_dan,
+        "/huongdan":              cmd_huong_dan,
     }
 
     fn = cmd_map.get(text)
     if fn:
-        if fn in (cmd_start,):
+        if fn is cmd_start:
             fn(cid, ten)
         else:
             fn(cid)
@@ -423,7 +419,7 @@ def main():
     offset = state.get("offset", 0)
     print(f"[Bot Handler] Bắt đầu lúc {fmt_vn()}, offset={offset}")
 
-    deadline  = time.time() + 8 * 60   # Chạy 8 phút
+    deadline  = time.time() + 8 * 60
     processed = 0
 
     while time.time() < deadline:
@@ -442,7 +438,6 @@ def main():
             offset = upd["update_id"] + 1
             processed += 1
 
-        # Lưu offset sau mỗi lần xử lý
         state["offset"]   = offset
         state["last_run"] = fmt_vn()
         save_state(state)
@@ -454,4 +449,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
