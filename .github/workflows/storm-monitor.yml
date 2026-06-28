@@ -1,0 +1,65 @@
+name: 🌀 Storm Monitor — Báo cáo tự động
+
+on:
+  schedule:
+    # Giờ VN (UTC+7) → UTC
+    - cron: "0 1 * * *"    # 08:00 VN
+    - cron: "0 7 * * *"    # 14:00 VN
+    - cron: "0 13 * * *"   # 20:00 VN
+    - cron: "0 19 * * *"   # 02:00 VN (sáng sớm)
+  workflow_dispatch:         # ← Cho phép bấm "Run workflow" thủ công để test
+
+permissions:
+  contents: write
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Cài thư viện
+        run: pip install requests beautifulsoup4 lxml
+
+      - name: 🔍 Kiểm tra secrets
+        run: |
+          if [ -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
+            echo "❌ THIẾU secret: TELEGRAM_BOT_TOKEN"
+            echo "   → Vào Settings > Secrets > Actions > New repository secret"
+            exit 1
+          fi
+          if [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+            echo "❌ THIẾU secret: TELEGRAM_CHAT_ID"
+            echo "   → Vào Settings > Secrets > Actions > New repository secret"
+            exit 1
+          fi
+          echo "✅ Secrets đã cấu hình đầy đủ"
+          echo "   Token: $(echo '${{ secrets.TELEGRAM_BOT_TOKEN }}' | cut -c1-8)..."
+          echo "   Chat ID: ${{ secrets.TELEGRAM_CHAT_ID }}"
+
+      - name: 🌀 Chạy báo cáo thời tiết
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python monitor.py
+          echo "✅ Chạy xong lúc $(TZ='Asia/Ho_Chi_Minh' date '+%d/%m/%Y %H:%M (GMT+7)')"
+
+      - name: 💾 Lưu trạng thái
+        run: |
+          git config user.name  "storm-bot[bot]"
+          git config user.email "storm-bot@noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || git commit -m "chore: update state [skip ci]"
+          git push
+        continue-on-error: true   # Không dừng nếu không có gì để commit
