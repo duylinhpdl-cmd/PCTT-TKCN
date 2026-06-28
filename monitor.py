@@ -1,7 +1,8 @@
 """
-🌀 Storm Monitor Bot - Theo dõi áp thấp / bão Thái Bình Dương → Biển Đông
+🌀 Storm Monitor Bot v7 - Theo dõi áp thấp / bão Thái Bình Dương → Biển Đông
 Nguồn: NCHMF, JTWC, JMA, NHC, VnExpress, 24h, Dân Trí, Tuổi Trẻ, Thanh Niên
 Thời gian hiển thị theo giờ Việt Nam (UTC+7)
+Báo cáo gồm 5 thông tin cơ bản: Tên, Cấp độ, Hướng di chuyển, Khu vực ảnh hưởng, Thời gian đổ bộ
 """
 
 import os
@@ -18,7 +19,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 STATE_FILE         = "state.json"
 
-VN_TZ   = timezone(timedelta(hours=7))   # UTC+7 giờ Việt Nam
+VN_TZ   = timezone(timedelta(hours=7))
 
 BIEN_DONG  = {"lat_min": 5,  "lat_max": 25, "lon_min": 100, "lon_max": 125}
 WATCH_ZONE = {"lat_min": 5,  "lat_max": 30, "lon_min": 100, "lon_max": 155}
@@ -31,7 +32,6 @@ HEADERS = {
     )
 }
 
-# Từ khoá lọc bài báo tiếng Việt
 VN_KEYWORDS = [
     "áp thấp nhiệt đới", "áp thấp", "bão số",
     "cơn bão", "bão nhiệt đới", "bão mạnh",
@@ -42,7 +42,6 @@ VN_KEYWORDS = [
 
 # ── Tiện ích ───────────────────────────────────────────────────────────────────
 def now_vn():
-    """Trả về thời gian hiện tại theo giờ Việt Nam."""
     return datetime.now(VN_TZ)
 
 def fmt_time_vn():
@@ -100,6 +99,218 @@ def get_page(url, timeout=15):
     r.encoding = r.apparent_encoding or "utf-8"
     return BeautifulSoup(r.text, "html.parser")
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def parse_coords(text):
+    m = re.search(r"(\d+\.?\d*)\s*[Nn]\s+(\d+\.?\d*)\s*[Ee]", text)
+    if m:
+        return float(m.group(1)), float(m.group(2))
+    return None, None
+
+def parse_num(s):
+    m = re.search(r"(\d+\.?\d*)", str(s))
+    return float(m.group(1)) if m else None
+
+# ── Bảng dịch ─────────────────────────────────────────────────────────────────
+INTENSITY_VI = [
+    ("SUPER TYPHOON",       "Siêu bão"),
+    ("SEVERE TYPHOON",      "Bão dữ dội"),
+    ("TYPHOON",             "Bão lớn"),
+    ("TROPICAL STORM",      "Bão nhiệt đới"),
+    ("TROPICAL DEPRESSION", "Áp thấp nhiệt đới"),
+    ("DISTURBANCE",         "Nhiễu động nhiệt đới"),
+    ("REMNANTS",            "Tàn dư áp thấp"),
+    ("LOW",                 "Vùng áp thấp"),
+]
+
+DIRECTION_VI = {
+    "N":"Bắc","NNE":"Bắc-Đông Bắc","NE":"Đông Bắc","ENE":"Đông-Đông Bắc",
+    "E":"Đông","ESE":"Đông-Đông Nam","SE":"Đông Nam","SSE":"Nam-Đông Nam",
+    "S":"Nam","SSW":"Nam-Tây Nam","SW":"Tây Nam","WSW":"Tây-Tây Nam",
+    "W":"Tây","WNW":"Tây-Tây Bắc","NW":"Tây Bắc","NNW":"Bắc-Tây Bắc",
+    "STATIONARY":"Đứng yên",
+}
+
+NGUON_VI = {
+    "NCHMF 🏛️":     "Trung tâm Khí tượng Thủy văn Quốc gia",
+    "VnExpress 📰":  "Báo VnExpress",
+    "24h.com.vn 📡": "Báo 24h",
+    "Dân Trí 📰":    "Báo Dân Trí",
+    "Tuổi Trẻ 📰":   "Báo Tuổi Trẻ",
+    "Thanh Niên 📰": "Báo Thanh Niên",
+    "JTWC 🇺🇸":      "Trung tâm Cảnh báo Bão Hải quân Mỹ",
+    "JMA 🇯🇵":       "Cơ quan Khí tượng Nhật Bản",
+    "NHC/NOAA 🇺🇸":  "Trung tâm Bão Quốc gia Mỹ (NOAA)",
+}
+
+def dich_tieu_de(text):
+    result = text
+    for en, vi in INTENSITY_VI:
+        result = re.sub(en, vi, result, flags=re.IGNORECASE)
+    for en, vi in DIRECTION_VI.items():
+        result = re.sub(rf"\b{en}\b", vi, result)
+    return result
+
+def cap_do_canh_bao(title):
+    t = title.upper()
+    if "SUPER TYPHOON" in t or "SIÊU BÃO" in t:
+        return "🌀🌀", "SIÊU BÃO", "danger"
+    if "SEVERE TYPHOON" in t:
+        return "🌀", "BÃO DỮ DỘI", "danger"
+    if any(k in t for k in ["TYPHOON","BÃO SỐ","CƠN BÃO","BÃO MẠNH","BÃO LỚN"]):
+        return "🌀", "BÃO", "high"
+    if any(k in t for k in ["TROPICAL STORM","BÃO NHIỆT ĐỚI"]):
+        return "🌪️", "BÃO NHIỆT ĐỚI", "medium"
+    if any(k in t for k in ["TROPICAL DEPRESSION","ÁP THẤP NHIỆT ĐỚI"]):
+        return "⚠️", "ÁP THẤP NHIỆT ĐỚI", "medium"
+    if any(k in t for k in ["DISTURBANCE","NHIỄU ĐỘNG"]):
+        return "🔵", "NHIỄU ĐỘNG NHIỆT ĐỚI", "low"
+    if any(k in t for k in ["LOW","ÁP THẤP","VÙNG ÁP THẤP"]):
+        return "🔵", "VÙNG ÁP THẤP", "low"
+    return "📢", "THÔNG BÁO THỜI TIẾT", "info"
+
+# ── Trích xuất 5 thông tin cơ bản từ bài báo ─────────────────────────────────
+def trich_xuat_ten_bao(title, source=""):
+    """Trích tên cơn bão/áp thấp từ tiêu đề."""
+    # Tên bão quốc tế (ví dụ: TYPHOON BEBINCA, TROPICAL STORM KONG-REY)
+    m = re.search(
+        r"(?:TYPHOON|TROPICAL STORM|TROPICAL DEPRESSION|SUPER TYPHOON)\s+([A-Z]{2,})",
+        title.upper()
+    )
+    if m:
+        return m.group(1).capitalize()
+
+    # Bão số (tiếng Việt)
+    m = re.search(r"bão số\s*(\d+)", title, re.IGNORECASE)
+    if m:
+        return f"Bão số {m.group(1)}"
+
+    # Áp thấp nhiệt đới / áp thấp
+    if "áp thấp nhiệt đới" in title.lower():
+        return "Áp thấp nhiệt đới"
+    if "áp thấp" in title.lower():
+        return "Áp thấp"
+    if "nhiễu động" in title.lower():
+        return "Nhiễu động nhiệt đới"
+
+    # Tên từ JMA (đã được format sẵn)
+    if "JMA" in source:
+        m = re.search(r"(Siêu bão|Bão lớn|Bão nhiệt đới|Áp thấp nhiệt đới)\s+(\w+)", title)
+        if m:
+            return f"{m.group(1)} {m.group(2)}"
+
+    return "Chưa có tên chính thức"
+
+def trich_xuat_cap_do(title):
+    """Trả về cấp độ bão dạng chuỗi mô tả đầy đủ."""
+    t = title.upper()
+    # Cấp Beaufort / cấp gió trong tiêu đề tiếng Việt
+    m = re.search(r"cấp\s*(\d+)", title, re.IGNORECASE)
+    cap_str = f", cấp {m.group(1)}" if m else ""
+
+    if "SUPER TYPHOON" in t or "SIÊU BÃO" in t:
+        return f"Siêu bão{cap_str}"
+    if "SEVERE TYPHOON" in t or "BÃO DỮ DỘI" in t:
+        return f"Bão dữ dội{cap_str}"
+    if any(k in t for k in ["TYPHOON","BÃO SỐ","CƠN BÃO","BÃO MẠNH","BÃO LỚN"]):
+        return f"Bão{cap_str}"
+    if any(k in t for k in ["TROPICAL STORM","BÃO NHIỆT ĐỚI"]):
+        return f"Bão nhiệt đới{cap_str}"
+    if any(k in t for k in ["TROPICAL DEPRESSION","ÁP THẤP NHIỆT ĐỚI"]):
+        return f"Áp thấp nhiệt đới{cap_str}"
+    if any(k in t for k in ["DISTURBANCE","NHIỄU ĐỘNG"]):
+        return f"Nhiễu động nhiệt đới{cap_str}"
+    if any(k in t for k in ["LOW","ÁP THẤP"]):
+        return f"Vùng áp thấp{cap_str}"
+    return f"Chưa xác định{cap_str}"
+
+def trich_xuat_huong(title, alert=None):
+    """Trích hướng di chuyển từ tiêu đề hoặc metadata."""
+    # Hướng từ JMA đã có trong title
+    for en, vi in DIRECTION_VI.items():
+        if f"hướng {vi}" in title.lower():
+            return vi
+        if f"di chuyển về hướng {vi}" in title.lower():
+            return vi
+
+    # Hướng tiếng Anh từ JTWC/NHC
+    t = title.upper()
+    for en, vi in DIRECTION_VI.items():
+        if re.search(rf"\bMOVING\s+{en}\b|\bMOVEMENT\s+{en}\b|\b{en}\s+AT\b", t):
+            return vi
+
+    # Từ khoá đổ bộ → ngầm định hướng Tây
+    if any(k in title.lower() for k in ["đổ bộ", "vào đất liền", "tiến vào biển đông"]):
+        return "Tây (hướng vào Biển Đông / Việt Nam)"
+
+    # Metadata hướng nếu có
+    if alert and alert.get("huong"):
+        return alert["huong"]
+
+    return "Chưa xác định — xem bài báo gốc"
+
+def trich_xuat_khu_vuc(title, lat=None, lon=None):
+    """Xác định khu vực ảnh hưởng."""
+    t = title.lower()
+
+    # Tỉnh/vùng Việt Nam
+    tinh_viet = [
+        "quảng ninh","hải phòng","thái bình","nam định","ninh bình",
+        "thanh hóa","nghệ an","hà tĩnh","quảng bình","quảng trị",
+        "thừa thiên huế","đà nẵng","quảng nam","quảng ngãi","bình định",
+        "phú yên","khánh hòa","ninh thuận","bình thuận",
+        "bà rịa","vũng tàu","cà mau","kiên giang","bạc liêu",
+        "miền bắc","miền trung","miền nam","bắc bộ","trung bộ","nam bộ",
+    ]
+    found = [p for p in tinh_viet if p in t]
+    if found:
+        return "Việt Nam — " + ", ".join(p.title() for p in found[:3])
+
+    # Theo toạ độ
+    if lat is not None and lon is not None:
+        if in_bien_dong(lat, lon):
+            return f"Biển Đông ({lat:.1f}°N, {lon:.1f}°E)"
+        if lon > 125:
+            return f"Tây Thái Bình Dương ({lat:.1f}°N, {lon:.1f}°E)"
+        return f"({lat:.1f}°N, {lon:.1f}°E)"
+
+    # Từ khoá vùng biển
+    if "biển đông" in t:
+        return "Biển Đông"
+    if "philippines" in t or "philippine" in t:
+        return "Tây Thái Bình Dương (gần Philippines)"
+    if "thái bình dương" in t or "pacific" in t:
+        return "Tây Thái Bình Dương"
+    if "đổ bộ" in t or "ven biển" in t:
+        return "Ven biển Việt Nam (xem bài báo)"
+
+    return "Tây Thái Bình Dương / Biển Đông — xem bài báo"
+
+def trich_xuat_thoi_gian_do_bo(title):
+    """Trích thời gian đổ bộ dự kiến từ tiêu đề."""
+    t = title.lower()
+
+    # Ngày cụ thể
+    m = re.search(
+        r"(?:ngày|lúc|vào|dự kiến|khoảng)\s*"
+        r"(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|\d{1,2}\s*tháng\s*\d{1,2})",
+        t
+    )
+    if m:
+        return f"Dự kiến {m.group(1)}"
+
+    # Khoảng thời gian tương đối
+    for phrase in ["hôm nay","tối nay","đêm nay","sáng mai","chiều mai","ngày mai",
+                   "cuối tuần","trong 24 giờ","trong 48 giờ","trong vài ngày",
+                   "cuối tháng","đầu tháng"]:
+        if phrase in t:
+            return f"Dự kiến {phrase}"
+
+    # Từ khoá "đổ bộ" không có thời gian cụ thể
+    if "đổ bộ" in t:
+        return "Đang tiến vào đất liền — chưa có giờ cụ thể"
+
+    return "Chưa có thông tin — xem bài báo gốc"
+
 # ── Nguồn 1: NCHMF ────────────────────────────────────────────────────────────
 def scrape_nchmf():
     alerts = []
@@ -126,7 +337,6 @@ def scrape_nchmf():
 # ── Nguồn 2: VnExpress ────────────────────────────────────────────────────────
 def scrape_vnexpress():
     alerts = []
-    # VnExpress RSS thời tiết
     rss_urls = [
         "https://vnexpress.net/rss/thoi-tiet.rss",
         "https://vnexpress.net/rss/tin-tuc-su-kien.rss",
@@ -139,20 +349,15 @@ def scrape_vnexpress():
                 title = (item.findtext("title") or "").strip()
                 link  = (item.findtext("link")  or "").strip()
                 desc  = (item.findtext("description") or "").strip()
-                combined = title + " " + desc
-                if has_keyword(combined):
-                    alerts.append({
-                        "source": "VnExpress 📰",
-                        "title": title,
-                        "url": link,
-                        "id": make_id(title),
-                        "lat": None, "lon": None,
-                    })
+                if has_keyword(title + " " + desc):
+                    alerts.append({"source": "VnExpress 📰", "title": title,
+                                   "url": link, "id": make_id(title),
+                                   "lat": None, "lon": None})
         except Exception as e:
             print(f"[VnExpress] {e}")
     return alerts
 
-# ── Nguồn 3: 24h.com.vn ───────────────────────────────────────────────────────
+# ── Nguồn 3: 24h ──────────────────────────────────────────────────────────────
 def scrape_24h():
     alerts = []
     urls = [
@@ -162,7 +367,6 @@ def scrape_24h():
     for url in urls:
         try:
             soup = get_page(url)
-            # 24h dùng nhiều class khác nhau, tìm tất cả thẻ a có title dài
             for a in soup.find_all("a", href=True):
                 text = a.get("title", "") or a.get_text(strip=True)
                 href = a.get("href", "")
@@ -170,13 +374,9 @@ def scrape_24h():
                     continue
                 if has_keyword(text):
                     full = href if href.startswith("http") else "https://www.24h.com.vn" + href
-                    alerts.append({
-                        "source": "24h.com.vn 📡",
-                        "title": text[:200],
-                        "url": full,
-                        "id": make_id(text),
-                        "lat": None, "lon": None,
-                    })
+                    alerts.append({"source": "24h.com.vn 📡", "title": text[:200],
+                                   "url": full, "id": make_id(text),
+                                   "lat": None, "lon": None})
         except Exception as e:
             print(f"[24h] {e}")
     return alerts
@@ -184,15 +384,7 @@ def scrape_24h():
 # ── Nguồn 4: Dân Trí ──────────────────────────────────────────────────────────
 def scrape_dantri():
     alerts = []
-    rss_urls = [
-        "https://dantri.com.vn/suc-manh-so.rss",   # fallback
-        "https://dantri.com.vn/xa-hoi.rss",
-    ]
-    # Trang web thường
-    web_urls = [
-        "https://dantri.com.vn/xa-hoi/thoi-tiet.htm",
-    ]
-    for rss in rss_urls:
+    for rss in ["https://dantri.com.vn/xa-hoi.rss"]:
         try:
             r = requests.get(rss, headers=HEADERS, timeout=15)
             root = ET.fromstring(r.content)
@@ -201,44 +393,17 @@ def scrape_dantri():
                 link  = (item.findtext("link")  or "").strip()
                 desc  = BeautifulSoup(item.findtext("description") or "", "html.parser").get_text()
                 if has_keyword(title + " " + desc):
-                    alerts.append({
-                        "source": "Dân Trí 📰",
-                        "title": title,
-                        "url": link,
-                        "id": make_id(title),
-                        "lat": None, "lon": None,
-                    })
+                    alerts.append({"source": "Dân Trí 📰", "title": title,
+                                   "url": link, "id": make_id(title),
+                                   "lat": None, "lon": None})
         except Exception as e:
-            print(f"[DanTri RSS] {e}")
-    for url in web_urls:
-        try:
-            soup = get_page(url)
-            for a in soup.find_all("a", href=True):
-                text = a.get_text(strip=True)
-                href = a.get("href", "")
-                if len(text) < 15:
-                    continue
-                if has_keyword(text):
-                    full = href if href.startswith("http") else "https://dantri.com.vn" + href
-                    alerts.append({
-                        "source": "Dân Trí 📰",
-                        "title": text[:200],
-                        "url": full,
-                        "id": make_id(text),
-                        "lat": None, "lon": None,
-                    })
-        except Exception as e:
-            print(f"[DanTri web] {e}")
+            print(f"[DanTri] {e}")
     return alerts
 
-# ── Nguồn 5: Tuổi Trẻ Online ──────────────────────────────────────────────────
+# ── Nguồn 5: Tuổi Trẻ ─────────────────────────────────────────────────────────
 def scrape_tuoitre():
     alerts = []
-    rss_urls = [
-        "https://tuoitre.vn/rss/thoi-su.rss",
-        "https://tuoitre.vn/rss/tin-moi-nhat.rss",
-    ]
-    for rss in rss_urls:
+    for rss in ["https://tuoitre.vn/rss/thoi-su.rss", "https://tuoitre.vn/rss/tin-moi-nhat.rss"]:
         try:
             r = requests.get(rss, headers=HEADERS, timeout=15)
             root = ET.fromstring(r.content)
@@ -247,13 +412,9 @@ def scrape_tuoitre():
                 link  = (item.findtext("link")  or "").strip()
                 desc  = BeautifulSoup(item.findtext("description") or "", "html.parser").get_text()
                 if has_keyword(title + " " + desc):
-                    alerts.append({
-                        "source": "Tuổi Trẻ 📰",
-                        "title": title,
-                        "url": link,
-                        "id": make_id(title),
-                        "lat": None, "lon": None,
-                    })
+                    alerts.append({"source": "Tuổi Trẻ 📰", "title": title,
+                                   "url": link, "id": make_id(title),
+                                   "lat": None, "lon": None})
         except Exception as e:
             print(f"[TuoiTre] {e}")
     return alerts
@@ -261,11 +422,7 @@ def scrape_tuoitre():
 # ── Nguồn 6: Thanh Niên ───────────────────────────────────────────────────────
 def scrape_thanhnien():
     alerts = []
-    rss_urls = [
-        "https://thanhnien.vn/rss/thoi-su.rss",
-        "https://thanhnien.vn/rss/home.rss",
-    ]
-    for rss in rss_urls:
+    for rss in ["https://thanhnien.vn/rss/thoi-su.rss", "https://thanhnien.vn/rss/home.rss"]:
         try:
             r = requests.get(rss, headers=HEADERS, timeout=15)
             root = ET.fromstring(r.content)
@@ -274,13 +431,9 @@ def scrape_thanhnien():
                 link  = (item.findtext("link")  or "").strip()
                 desc  = BeautifulSoup(item.findtext("description") or "", "html.parser").get_text()
                 if has_keyword(title + " " + desc):
-                    alerts.append({
-                        "source": "Thanh Niên 📰",
-                        "title": title,
-                        "url": link,
-                        "id": make_id(title),
-                        "lat": None, "lon": None,
-                    })
+                    alerts.append({"source": "Thanh Niên 📰", "title": title,
+                                   "url": link, "id": make_id(title),
+                                   "lat": None, "lon": None})
         except Exception as e:
             print(f"[ThanhNien] {e}")
     return alerts
@@ -303,9 +456,16 @@ def scrape_jtwc():
             kws = ["TROPICAL DEPRESSION","TROPICAL STORM","TYPHOON","DISTURBANCE","LOW"]
             if any(k in text.upper() for k in kws):
                 if in_watch_zone(lat, lon) or (lat is None):
-                    alerts.append({"source": "JTWC 🇺🇸", "title": title,
-                                   "url": link, "id": make_id(title),
-                                   "lat": lat, "lon": lon})
+                    # Trích hướng từ JTWC description
+                    huong = None
+                    m = re.search(r"MOVING\s+([A-Z]{1,3})\s+AT", desc.upper())
+                    if m:
+                        huong = DIRECTION_VI.get(m.group(1), m.group(1))
+                    alerts.append({
+                        "source": "JTWC 🇺🇸", "title": title,
+                        "url": link, "id": make_id(title),
+                        "lat": lat, "lon": lon, "huong": huong,
+                    })
     except Exception as e:
         print(f"[JTWC] {e}")
     return alerts
@@ -329,14 +489,42 @@ def scrape_jma():
             if not in_watch_zone(lat, lon):
                 continue
             direction = storm.get("movement", {}).get("direction", {}).get("en", "")
+            speed_ms  = storm.get("movement", {}).get("speed", {}).get("value", "")
+            # Thời gian đổ bộ dự kiến từ forecast track
+            do_bo_du_kien = "Chưa có thông tin"
+            forecasts = storm.get("forecastTrack", [])
+            for fc in forecasts:
+                fc_pos = fc.get("position", {})
+                fc_lat = parse_num(fc_pos.get("latitude", ""))
+                fc_lon = parse_num(fc_pos.get("longitude", ""))
+                if fc_lat and fc_lon and in_bien_dong(fc_lat, fc_lon):
+                    fc_time = fc.get("datetime", "")
+                    if fc_time:
+                        try:
+                            dt = datetime.fromisoformat(fc_time.replace("Z","+00:00"))
+                            dt_vn = dt.astimezone(VN_TZ)
+                            do_bo_du_kien = dt_vn.strftime("%d/%m/%Y %H:%M (GMT+7)")
+                        except:
+                            do_bo_du_kien = fc_time
+                    break
+
             cuong_do_vi = next((vi for en, vi in INTENSITY_VI if en.upper() in intensity.upper()), intensity)
-            huong_vi = DIRECTION_VI.get(direction.upper().strip(), direction)
-            title = f"{cuong_do_vi} {name} — vị trí {lat}°N {lon}°E, di chuyển về hướng {huong_vi}"
+            huong_vi    = DIRECTION_VI.get(direction.upper().strip(), direction)
+            toc_do_str  = f", tốc độ ~{speed_ms} km/h" if speed_ms else ""
+            title = (
+                f"{cuong_do_vi} {name} — vị trí {lat}°N {lon}°E, "
+                f"di chuyển về hướng {huong_vi}{toc_do_str}"
+            )
             alerts.append({
                 "source": "JMA 🇯🇵", "title": title,
                 "url": "https://www.jma.go.jp/en/typh/",
                 "id": make_id(title), "lat": lat, "lon": lon,
                 "in_bien_dong": in_bien_dong(lat, lon),
+                "ten": f"{cuong_do_vi} {name}",
+                "cap_do": cuong_do_vi,
+                "huong": huong_vi,
+                "khu_vuc": f"Biển Đông ({lat}°N, {lon}°E)" if in_bien_dong(lat, lon) else f"Tây TBD ({lat}°N, {lon}°E)",
+                "do_bo": do_bo_du_kien,
             })
     except Exception as e:
         print(f"[JMA] {e}")
@@ -364,134 +552,36 @@ def scrape_nhc():
         print(f"[NHC] {e}")
     return alerts
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-def parse_coords(text):
-    m = re.search(r"(\d+\.?\d*)\s*[Nn]\s+(\d+\.?\d*)\s*[Ee]", text)
-    if m:
-        return float(m.group(1)), float(m.group(2))
-    return None, None
-
-def parse_num(s):
-    m = re.search(r"(\d+\.?\d*)", str(s))
-    return float(m.group(1)) if m else None
-
-# Bảng dịch cường độ bão tiếng Anh → tiếng Việt
-INTENSITY_VI = [
-    ("SUPER TYPHOON",       "Siêu bão"),
-    ("SEVERE TYPHOON",      "Bão dữ dội"),
-    ("TYPHOON",             "Bão lớn"),
-    ("TROPICAL STORM",      "Bão nhiệt đới"),
-    ("TROPICAL DEPRESSION", "Áp thấp nhiệt đới"),
-    ("DISTURBANCE",         "Nhiễu động nhiệt đới"),
-    ("REMNANTS",            "Tàn dư áp thấp"),
-    ("LOW",                 "Vùng áp thấp"),
-]
-
-# Bảng dịch hướng di chuyển
-DIRECTION_VI = {
-    "N":"Bắc","NNE":"Bắc-Đông Bắc","NE":"Đông Bắc","ENE":"Đông-Đông Bắc",
-    "E":"Đông","ESE":"Đông-Đông Nam","SE":"Đông Nam","SSE":"Nam-Đông Nam",
-    "S":"Nam","SSW":"Nam-Tây Nam","SW":"Tây Nam","WSW":"Tây-Tây Nam",
-    "W":"Tây","WNW":"Tây-Tây Bắc","NW":"Tây Bắc","NNW":"Bắc-Tây Bắc",
-    "STATIONARY":"Đứng yên",
-}
-
-def dich_tieu_de(text):
-    """Dịch các thuật ngữ bão tiếng Anh sang tiếng Việt trong tiêu đề."""
-    result = text
-    for en, vi in INTENSITY_VI:
-        result = re.sub(en, vi, result, flags=re.IGNORECASE)
-    for en, vi in DIRECTION_VI.items():
-        result = re.sub(rf"\b{en}\b", vi, result)
-    return result
-
-def cap_do_canh_bao(title):
-    """Trả về (icon, tên cấp độ tiếng Việt, level) dựa trên tiêu đề."""
-    t = title.upper()
-    if "SUPER TYPHOON" in t or "SIÊU BÃO" in t:
-        return "🌀🌀", "SIÊU BÃO", "danger"
-    if "SEVERE TYPHOON" in t:
-        return "🌀", "BÃO DỮ DỘI", "danger"
-    if any(k in t for k in ["TYPHOON","BÃO SỐ","CƠN BÃO","BÃO MẠNH","BÃO LỚN"]):
-        return "🌀", "BÃO", "high"
-    if any(k in t for k in ["TROPICAL STORM","BÃO NHIỆT ĐỚI"]):
-        return "🌪️", "BÃO NHIỆT ĐỚI", "medium"
-    if any(k in t for k in ["TROPICAL DEPRESSION","ÁP THẤP NHIỆT ĐỚI"]):
-        return "⚠️", "ÁP THẤP NHIỆT ĐỚI", "medium"
-    if any(k in t for k in ["DISTURBANCE","NHIỄU ĐỘNG"]):
-        return "🔵", "NHIỄU ĐỘNG NHIỆT ĐỚI", "low"
-    if any(k in t for k in ["LOW","ÁP THẤP","VÙNG ÁP THẤP"]):
-        return "🔵", "VÙNG ÁP THẤP", "low"
-    return "📢", "THÔNG BÁO THỜI TIẾT", "info"
-
-# Tên nguồn tiếng Việt
-NGUON_VI = {
-    "NCHMF 🏛️":     "Trung tâm Khí tượng Thủy văn Quốc gia",
-    "VnExpress 📰":  "Báo VnExpress",
-    "24h.com.vn 📡": "Báo 24h",
-    "Dân Trí 📰":    "Báo Dân Trí",
-    "Tuổi Trẻ 📰":   "Báo Tuổi Trẻ",
-    "Thanh Niên 📰": "Báo Thanh Niên",
-    "JTWC 🇺🇸":      "Trung tâm Cảnh báo Bão Hải quân Mỹ",
-    "JMA 🇯🇵":       "Cơ quan Khí tượng Nhật Bản",
-    "NHC/NOAA 🇺🇸":  "Trung tâm Bão Quốc gia Mỹ (NOAA)",
-}
-
-# ── Format tin nhắn hoàn toàn tiếng Việt ──────────────────────────────────────
-def format_alert(alert):
+# ── Format block 5 thông tin cho mỗi hệ thống ────────────────────────────────
+def format_5_thong_tin(alert):
+    """Trả về block 5 dòng thông tin cơ bản cho 1 hệ thống bão."""
     title  = alert.get("title", "")
-    src    = alert.get("source", "?")
-    url    = alert.get("url", "")
+    source = alert.get("source", "")
     lat    = alert.get("lat")
     lon    = alert.get("lon")
-    in_bd  = alert.get("in_bien_dong", False)
 
-    icon, cap_do, level = cap_do_canh_bao(title)
-    ten_nguon = NGUON_VI.get(src, src)
-    tieu_de   = dich_tieu_de(title)
+    # Ưu tiên metadata đã parse sẵn (từ JMA/JTWC), fallback sang trích từ title
+    ten      = alert.get("ten")      or trich_xuat_ten_bao(title, source)
+    cap_do   = alert.get("cap_do")   or trich_xuat_cap_do(title)
+    huong    = alert.get("huong")    or trich_xuat_huong(title, alert)
+    khu_vuc  = alert.get("khu_vuc") or trich_xuat_khu_vuc(title, lat, lon)
+    do_bo    = alert.get("do_bo")    or trich_xuat_thoi_gian_do_bo(title)
 
-    # Vị trí / cảnh báo vùng
-    if in_bd:
-        vi_tri = (
-            "🇻🇳 <b>ĐANG Ở BIỂN ĐÔNG</b>\n"
-            "⚡️ Nguy cơ ảnh hưởng trực tiếp đến Việt Nam!"
-        )
-    elif lat and lon:
-        vi_tri = f"📍 Vị trí: {lat:.1f}°N, {lon:.1f}°E (Tây Thái Bình Dương)"
-    else:
-        vi_tri = "📍 Khu vực: Tây Thái Bình Dương / Biển Đông"
+    url = alert.get("url", "")
+    tieu = title[:80] + ("..." if len(title) > 80 else "")
+    header = f'  📌 <a href="{url}">{tieu}</a>' if url else f"  📌 {tieu}"
 
-    # Mức độ cảnh báo
-    MUC_DO = {
-        "danger": "🔴 Mức độ: <b>RẤT NGUY HIỂM</b>",
-        "high":   "🟠 Mức độ: <b>NGUY HIỂM</b>",
-        "medium": "🟡 Mức độ: <b>CẦN THEO DÕI</b>",
-        "low":    "🟢 Mức độ: <b>THEO DÕI</b>",
-        "info":   "🔵 Mức độ: <b>THÔNG TIN</b>",
-    }
-    muc_do_str = MUC_DO.get(level, "🔵 Mức độ: <b>THÔNG TIN</b>")
-
-    msg = (
-        f"{icon} <b>CẢNH BÁO: {cap_do}</b>\n"
-        f"{'━' * 22}\n"
-        f"📋 {tieu_de}\n"
-        f"\n"
-        f"{muc_do_str}\n"
-        f"{vi_tri}\n"
-        f"\n"
-        f"📡 Nguồn: {ten_nguon}\n"
-        f"🕐 Cập nhật: {fmt_time_vn()}\n"
-        f"{'━' * 22}"
+    return (
+        f"{header}\n"
+        f"     1️⃣ <b>Tên:</b> {ten}\n"
+        f"     2️⃣ <b>Cấp độ:</b> {cap_do}\n"
+        f"     3️⃣ <b>Hướng di chuyển:</b> {huong}\n"
+        f"     4️⃣ <b>Khu vực ảnh hưởng:</b> {khu_vuc}\n"
+        f"     5️⃣ <b>Dự kiến đổ bộ VN:</b> {do_bo}\n"
     )
-    if url:
-        msg += f"\n🔗 <a href='{url}'>Xem bài viết đầy đủ</a>"
-    return msg
 
-# ── Báo cáo định kỳ (thay thế main cũ) ───────────────────────────────────────
+# ── Format báo cáo tổng hợp ───────────────────────────────────────────────────
 def format_bao_cao(all_alerts, new_alerts, gio_bao_cao):
-    """Tạo tin nhắn báo cáo đầy đủ gửi vào các khung giờ cố định."""
-
-    # Phân loại
     bao       = [a for a in all_alerts if any(k in a["title"].upper()
                   for k in ["TYPHOON","BÃO SỐ","CƠN BÃO","BÃO MẠNH","BÃO LỚN","SIÊU BÃO"])]
     at_nhiet  = [a for a in all_alerts if any(k in a["title"].upper()
@@ -500,10 +590,8 @@ def format_bao_cao(all_alerts, new_alerts, gio_bao_cao):
     nhieu_dong= [a for a in all_alerts if any(k in a["title"].upper()
                   for k in ["DISTURBANCE","NHIỄU ĐỘNG","VÙNG ÁP THẤP","LOW"])]
     bien_dong = [a for a in all_alerts if a.get("in_bien_dong")]
-
     co_su_kien = bool(bao or at_nhiet or nhieu_dong)
 
-    # Tiêu đề và đánh giá tổng thể
     if bao and bien_dong:
         danh_gia = "🔴 <b>RẤT NGUY HIỂM — BÃO ĐANG Ở BIỂN ĐÔNG</b>"
     elif bao:
@@ -529,75 +617,100 @@ def format_bao_cao(all_alerts, new_alerts, gio_bao_cao):
             "  • Không có áp thấp nhiệt đới\n"
             "  • Không có nhiễu động đáng kể\n"
             "  • Biển Đông và Tây Thái Bình Dương ổn định\n\n"
-            f"📡 Đã kiểm tra <b>9 nguồn tin</b> trong nước và quốc tế.\n"
+            "📡 Đã kiểm tra <b>9 nguồn tin</b> trong nước và quốc tế.\n"
         )
     else:
-        def dong_tin(a, max_title=80):
-            """1 dòng: tiêu đề rút gọn + hyperlink + cờ Biển Đông."""
-            bd  = " 🇻🇳" if a.get("in_bien_dong") else ""
-            url = a.get("url", "")
-            tieu = a["title"][:max_title] + ("..." if len(a["title"]) > max_title else "")
-            if url:
-                return f'  • <a href="{url}">{tieu}</a>{bd}\n'
-            return f"  • {tieu}{bd}\n"
-
-        # Bão
+        # ── BÃO ──
         if bao:
             msg += f"🌀 <b>BÃO ({len(bao)} hệ thống):</b>\n"
             for a in bao[:3]:
-                msg += dong_tin(a)
+                msg += format_5_thong_tin(a)
             msg += "\n"
 
-        # Áp thấp nhiệt đới / bão nhiệt đới
+        # ── ÁP THẤP NHIỆT ĐỚI / BÃO NHIỆT ĐỚI ──
         if at_nhiet:
             msg += f"⚠️ <b>ÁP THẤP NHIỆT ĐỚI / BÃO NHIỆT ĐỚI ({len(at_nhiet)} hệ thống):</b>\n"
             for a in at_nhiet[:3]:
-                msg += dong_tin(a)
+                msg += format_5_thong_tin(a)
             msg += "\n"
 
-        # Nhiễu động / vùng áp thấp
+        # ── NHIỄU ĐỘNG / VÙNG ÁP THẤP ──
         if nhieu_dong:
             msg += f"🔵 <b>VÙNG ÁP THẤP / NHIỄU ĐỘNG ({len(nhieu_dong)} khu vực):</b>\n"
             for a in nhieu_dong[:3]:
-                msg += dong_tin(a)
+                msg += format_5_thong_tin(a)
             msg += "\n"
 
-        # Hệ thống ở Biển Đông
+        # ── HỆ THỐNG Ở BIỂN ĐÔNG ──
         if bien_dong:
             msg += "🇻🇳 <b>⚡️ ĐANG Ở BIỂN ĐÔNG:</b>\n"
             for a in bien_dong[:3]:
-                msg += dong_tin(a)
+                msg += format_5_thong_tin(a)
             msg += "\n"
 
-        # Tất cả link nguồn đã thu thập trong báo cáo này
-        tat_ca = bao + at_nhiet + nhieu_dong
-        seen_url = set()
-        ds_link = []
-        for a in tat_ca:
-            url = a.get("url","")
-            if url and url not in seen_url:
-                seen_url.add(url)
-                ds_link.append(a)
-
-        if ds_link:
-            msg += f"📎 <b>Nguồn bài viết ({len(ds_link)} bài):</b>\n"
-            for a in ds_link[:8]:
-                url  = a.get("url","")
-                tieu = a["title"][:70] + ("..." if len(a["title"]) > 70 else "")
-                src  = a.get("source","").split()[0]
-                msg += f'  [{src}] <a href="{url}">{tieu}</a>\n'
-            msg += "\n"
-
+        # ── TIN MỚI ──
         if new_alerts:
-            msg += f"🆕 <b>Tin mới so với báo cáo trước:</b> {len(new_alerts)} mục\n"
+            msg += f"🆕 <b>Tin mới so với báo cáo trước:</b> {len(new_alerts)} mục\n\n"
 
     msg += f"{'━' * 24}\n"
     msg += "📡 Nguồn: NCHMF · VnExpress · 24h · Dân Trí · Tuổi Trẻ · Thanh Niên · JTWC · JMA · NOAA\n"
     msg += f"⏰ Báo cáo tiếp theo: lúc {gio_tiep_theo()} (giờ VN)"
     return msg
 
+def format_alert(alert):
+    """Format cảnh báo chi tiết (gửi kèm khi có tin nghiêm trọng mới)."""
+    title  = alert.get("title", "")
+    src    = alert.get("source", "?")
+    url    = alert.get("url", "")
+    lat    = alert.get("lat")
+    lon    = alert.get("lon")
+    in_bd  = alert.get("in_bien_dong", False)
+
+    icon, cap_do, level = cap_do_canh_bao(title)
+    ten_nguon = NGUON_VI.get(src, src)
+    tieu_de   = dich_tieu_de(title)
+
+    if in_bd:
+        vi_tri = "🇻🇳 <b>ĐANG Ở BIỂN ĐÔNG</b>\n     ⚡️ Nguy cơ ảnh hưởng trực tiếp đến Việt Nam!"
+    elif lat and lon:
+        vi_tri = f"📍 Vị trí: {lat:.1f}°N, {lon:.1f}°E (Tây Thái Bình Dương)"
+    else:
+        vi_tri = "📍 Khu vực: Tây Thái Bình Dương / Biển Đông"
+
+    MUC_DO = {
+        "danger": "🔴 Mức độ: <b>RẤT NGUY HIỂM</b>",
+        "high":   "🟠 Mức độ: <b>NGUY HIỂM</b>",
+        "medium": "🟡 Mức độ: <b>CẦN THEO DÕI</b>",
+        "low":    "🟢 Mức độ: <b>THEO DÕI</b>",
+        "info":   "🔵 Mức độ: <b>THÔNG TIN</b>",
+    }
+
+    # 5 thông tin cơ bản
+    ten     = alert.get("ten")     or trich_xuat_ten_bao(title, src)
+    huong   = alert.get("huong")   or trich_xuat_huong(title, alert)
+    khu_vuc = alert.get("khu_vuc") or trich_xuat_khu_vuc(title, lat, lon)
+    do_bo   = alert.get("do_bo")   or trich_xuat_thoi_gian_do_bo(title)
+
+    msg = (
+        f"{icon} <b>CẢNH BÁO: {cap_do}</b>\n"
+        f"{'━' * 22}\n"
+        f"📋 {tieu_de}\n\n"
+        f"1️⃣ <b>Tên:</b> {ten}\n"
+        f"2️⃣ <b>Cấp độ:</b> {trich_xuat_cap_do(title)}\n"
+        f"3️⃣ <b>Hướng di chuyển:</b> {huong}\n"
+        f"4️⃣ <b>Khu vực ảnh hưởng:</b> {khu_vuc}\n"
+        f"5️⃣ <b>Dự kiến đổ bộ VN:</b> {do_bo}\n\n"
+        f"{MUC_DO.get(level,'')}\n"
+        f"{vi_tri}\n\n"
+        f"📡 Nguồn: {ten_nguon}\n"
+        f"🕐 Cập nhật: {fmt_time_vn()}\n"
+        f"{'━' * 22}"
+    )
+    if url:
+        msg += f"\n🔗 <a href='{url}'>Xem bài viết đầy đủ</a>"
+    return msg
+
 def gio_tiep_theo():
-    """Tính khung giờ báo cáo kế tiếp."""
     gio_bao_cao = [2, 8, 14, 20]
     h = now_vn().hour
     for g in gio_bao_cao:
@@ -606,7 +719,6 @@ def gio_tiep_theo():
     return "02:00 (ngày mai)"
 
 def gio_bao_cao_hien_tai():
-    """Trả về tên khung giờ đang chạy."""
     h = now_vn().hour
     if 1 <= h < 7:
         return "02:00"
@@ -617,13 +729,12 @@ def gio_bao_cao_hien_tai():
     else:
         return "20:00"
 
-
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     print(f"[Bot] Bắt đầu lúc {fmt_time_vn()}")
     state    = load_state()
     sent_ids = set(state.get("sent_ids", []))
 
-    # Thu thập tất cả nguồn
     all_alerts = []
     for fn in [scrape_nchmf, scrape_vnexpress, scrape_24h, scrape_dantri,
                scrape_tuoitre, scrape_thanhnien, scrape_jtwc, scrape_jma, scrape_nhc]:
@@ -632,20 +743,16 @@ def main():
         except Exception as e:
             print(f"[Scrape] {e}")
 
-    # Lọc trùng
     seen = set()
     unique = [a for a in all_alerts if not (a["id"] in seen or seen.add(a["id"]))]
     print(f"[Bot] Tổng: {len(unique)} mục (sau lọc trùng)")
 
-    # Xác định tin MỚI (chưa gửi lần nào)
     new_alerts = [a for a in unique if a["id"] not in sent_ids]
 
-    # ── Gửi báo cáo định kỳ (luôn gửi) ──
     gio = gio_bao_cao_hien_tai()
     bao_cao = format_bao_cao(unique, new_alerts, gio)
     send_telegram(bao_cao)
 
-    # ── Nếu có tin mới nghiêm trọng → gửi thêm chi tiết từng tin ──
     keywords_nghiem = [
         "TYPHOON","SUPER TYPHOON","TROPICAL STORM","TROPICAL DEPRESSION",
         "BÃO SỐ","CƠN BÃO","BÃO NHIỆT ĐỚI","ÁP THẤP NHIỆT ĐỚI","SIÊU BÃO"
@@ -659,11 +766,10 @@ def main():
         for a in tin_nghiem_moi[:5]:
             send_telegram(format_alert(a))
 
-    # Cập nhật state
     all_ids = list(sent_ids) + [a["id"] for a in new_alerts]
-    state["sent_ids"]    = all_ids[-300:]
-    state["last_run_vn"] = fmt_time_vn()
-    state["last_run_utc"]= datetime.now(timezone.utc).isoformat()
+    state["sent_ids"]     = all_ids[-300:]
+    state["last_run_vn"]  = fmt_time_vn()
+    state["last_run_utc"] = datetime.now(timezone.utc).isoformat()
     save_state(state)
     print("[Bot] Xong.")
 
