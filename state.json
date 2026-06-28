@@ -1,4 +1,8 @@
 {
-  "sent_ids": [],
-  "last_run": null
+  "sent_ids": [
+    "9a538f2e4a5a"
+  ],
+  "last_run": null,
+  "last_run_vn": "28/06/2026 21:48 (GMT+7)",
+  "last_run_utc": "2026-06-28T14:48:39.365157+00:00"
 }
