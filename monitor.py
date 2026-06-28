@@ -487,40 +487,158 @@ def format_alert(alert):
         msg += f"\n🔗 <a href='{url}'>Xem bài viết đầy đủ</a>"
     return msg
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Báo cáo định kỳ (thay thế main cũ) ───────────────────────────────────────
+def format_bao_cao(all_alerts, new_alerts, gio_bao_cao):
+    """Tạo tin nhắn báo cáo đầy đủ gửi vào các khung giờ cố định."""
+
+    # Phân loại
+    bao       = [a for a in all_alerts if any(k in a["title"].upper()
+                  for k in ["TYPHOON","BÃO SỐ","CƠN BÃO","BÃO MẠNH","BÃO LỚN","SIÊU BÃO"])]
+    at_nhiet  = [a for a in all_alerts if any(k in a["title"].upper()
+                  for k in ["TROPICAL STORM","TROPICAL DEPRESSION",
+                             "ÁP THẤP NHIỆT ĐỚI","BÃO NHIỆT ĐỚI"])]
+    nhieu_dong= [a for a in all_alerts if any(k in a["title"].upper()
+                  for k in ["DISTURBANCE","NHIỄU ĐỘNG","VÙNG ÁP THẤP","LOW"])]
+    bien_dong = [a for a in all_alerts if a.get("in_bien_dong")]
+
+    co_su_kien = bool(bao or at_nhiet or nhieu_dong)
+
+    # Tiêu đề và đánh giá tổng thể
+    if bao and bien_dong:
+        danh_gia = "🔴 <b>RẤT NGUY HIỂM — BÃO ĐANG Ở BIỂN ĐÔNG</b>"
+    elif bao:
+        danh_gia = "🟠 <b>NGUY HIỂM — CÓ BÃO ĐANG HOẠT ĐỘNG</b>"
+    elif at_nhiet and bien_dong:
+        danh_gia = "🟠 <b>CẦN THEO DÕI — ÁP THẤP NHIỆT ĐỚI VÀO BIỂN ĐÔNG</b>"
+    elif at_nhiet:
+        danh_gia = "🟡 <b>CẦN THEO DÕI — CÓ ÁP THẤP NHIỆT ĐỚI</b>"
+    elif nhieu_dong:
+        danh_gia = "🟡 <b>THEO DÕI — CÓ NHIỄU ĐỘNG TRÊN BIỂN</b>"
+    else:
+        danh_gia = "🟢 <b>BÌNH THƯỜNG — KHÔNG CÓ SỰ KIỆN BẤT THƯỜNG</b>"
+
+    msg  = f"📋 <b>BÁO CÁO THỜI TIẾT {gio_bao_cao}</b>\n"
+    msg += f"🕐 {fmt_time_vn()}\n"
+    msg += f"{'━' * 24}\n\n"
+    msg += f"{danh_gia}\n\n"
+
+    if not co_su_kien:
+        msg += (
+            "✅ Không ghi nhận sự kiện nào:\n"
+            "  • Không có bão\n"
+            "  • Không có áp thấp nhiệt đới\n"
+            "  • Không có nhiễu động đáng kể\n"
+            "  • Biển Đông và Tây Thái Bình Dương ổn định\n\n"
+            f"📡 Đã kiểm tra <b>9 nguồn tin</b> trong nước và quốc tế.\n"
+        )
+    else:
+        # Bão
+        if bao:
+            msg += f"🌀 <b>BÃO ({len(bao)} hệ thống):</b>\n"
+            for a in bao[:3]:
+                bd = " 🇻🇳" if a.get("in_bien_dong") else ""
+                msg += f"  • {a['title'][:90]}{bd}\n"
+            msg += "\n"
+
+        # Áp thấp nhiệt đới
+        if at_nhiet:
+            msg += f"⚠️ <b>ÁP THẤP NHIỆT ĐỚI / BÃO NHIỆT ĐỚI ({len(at_nhiet)} hệ thống):</b>\n"
+            for a in at_nhiet[:3]:
+                bd = " 🇻🇳" if a.get("in_bien_dong") else ""
+                msg += f"  • {a['title'][:90]}{bd}\n"
+            msg += "\n"
+
+        # Nhiễu động / vùng áp thấp
+        if nhieu_dong:
+            msg += f"🔵 <b>VÙNG ÁP THẤP / NHIỄU ĐỘNG ({len(nhieu_dong)} khu vực):</b>\n"
+            for a in nhieu_dong[:2]:
+                msg += f"  • {a['title'][:90]}\n"
+            msg += "\n"
+
+        # Hệ thống ở Biển Đông
+        if bien_dong:
+            msg += "🇻🇳 <b>⚡️ ĐANG Ở BIỂN ĐÔNG:</b>\n"
+            for a in bien_dong[:2]:
+                msg += f"  • {a['title'][:90]}\n"
+            msg += "\n"
+
+        # Tin mới so với lần báo cáo trước
+        if new_alerts:
+            msg += f"🆕 <b>Tin mới kể từ báo cáo trước:</b> {len(new_alerts)} mục\n\n"
+
+    msg += f"{'━' * 24}\n"
+    msg += "📡 Nguồn: NCHMF · VnExpress · 24h · Dân Trí · Tuổi Trẻ · Thanh Niên · JTWC · JMA · NOAA\n"
+    msg += f"⏰ Báo cáo tiếp theo: lúc {gio_tiep_theo()} (giờ VN)"
+    return msg
+
+def gio_tiep_theo():
+    """Tính khung giờ báo cáo kế tiếp."""
+    gio_bao_cao = [2, 8, 14, 20]
+    h = now_vn().hour
+    for g in gio_bao_cao:
+        if g > h:
+            return f"{g:02d}:00"
+    return "02:00 (ngày mai)"
+
+def gio_bao_cao_hien_tai():
+    """Trả về tên khung giờ đang chạy."""
+    h = now_vn().hour
+    if 1 <= h < 7:
+        return "02:00"
+    elif 7 <= h < 13:
+        return "08:00"
+    elif 13 <= h < 19:
+        return "14:00"
+    else:
+        return "20:00"
+
+
 def main():
     print(f"[Bot] Bắt đầu lúc {fmt_time_vn()}")
     state    = load_state()
     sent_ids = set(state.get("sent_ids", []))
 
+    # Thu thập tất cả nguồn
     all_alerts = []
-    all_alerts += scrape_nchmf()
-    all_alerts += scrape_vnexpress()
-    all_alerts += scrape_24h()
-    all_alerts += scrape_dantri()
-    all_alerts += scrape_tuoitre()
-    all_alerts += scrape_thanhnien()
-    all_alerts += scrape_jtwc()
-    all_alerts += scrape_jma()
-    all_alerts += scrape_nhc()
+    for fn in [scrape_nchmf, scrape_vnexpress, scrape_24h, scrape_dantri,
+               scrape_tuoitre, scrape_thanhnien, scrape_jtwc, scrape_jma, scrape_nhc]:
+        try:
+            all_alerts += fn()
+        except Exception as e:
+            print(f"[Scrape] {e}")
 
-    print(f"[Bot] Tổng tìm thấy: {len(all_alerts)} mục")
+    # Lọc trùng
+    seen = set()
+    unique = [a for a in all_alerts if not (a["id"] in seen or seen.add(a["id"]))]
+    print(f"[Bot] Tổng: {len(unique)} mục (sau lọc trùng)")
 
-    new_sent = []
-    for alert in all_alerts:
-        aid = alert["id"]
-        if aid in sent_ids:
-            continue
-        print(f"[Bot] 🚨 Gửi: {alert['title'][:70]}")
-        send_telegram(format_alert(alert))
-        new_sent.append(aid)
+    # Xác định tin MỚI (chưa gửi lần nào)
+    new_alerts = [a for a in unique if a["id"] not in sent_ids]
 
-    if not new_sent:
-        print("[Bot] ✅ Không có cảnh báo mới.")
+    # ── Gửi báo cáo định kỳ (luôn gửi) ──
+    gio = gio_bao_cao_hien_tai()
+    bao_cao = format_bao_cao(unique, new_alerts, gio)
+    send_telegram(bao_cao)
 
-    state["sent_ids"] = (list(sent_ids) + new_sent)[-300:]
+    # ── Nếu có tin mới nghiêm trọng → gửi thêm chi tiết từng tin ──
+    keywords_nghiem = [
+        "TYPHOON","SUPER TYPHOON","TROPICAL STORM","TROPICAL DEPRESSION",
+        "BÃO SỐ","CƠN BÃO","BÃO NHIỆT ĐỚI","ÁP THẤP NHIỆT ĐỚI","SIÊU BÃO"
+    ]
+    tin_nghiem_moi = [
+        a for a in new_alerts
+        if any(k in a["title"].upper() for k in keywords_nghiem)
+    ]
+    if tin_nghiem_moi:
+        send_telegram(f"🚨 <b>Chi tiết {len(tin_nghiem_moi)} tin nghiêm trọng mới:</b>")
+        for a in tin_nghiem_moi[:5]:
+            send_telegram(format_alert(a))
+
+    # Cập nhật state
+    all_ids = list(sent_ids) + [a["id"] for a in new_alerts]
+    state["sent_ids"]    = all_ids[-300:]
     state["last_run_vn"] = fmt_time_vn()
-    state["last_run_utc"] = datetime.now(timezone.utc).isoformat()
+    state["last_run_utc"]= datetime.now(timezone.utc).isoformat()
     save_state(state)
     print("[Bot] Xong.")
 
