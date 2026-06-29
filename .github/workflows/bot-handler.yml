@@ -2,7 +2,7 @@ name: Bot Handler
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   bot-handler:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,9 +27,11 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          POLLING_MINUTES: "4"
         run: python bot_handler.py
 
       - name: Save state
+        if: always()
         run: |
           git config user.name "storm-bot[bot]"
           git config user.email "storm-bot@noreply.github.com"
