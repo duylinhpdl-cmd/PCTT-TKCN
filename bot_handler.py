@@ -582,9 +582,10 @@ def main():
     print(f"[Bot Handler] Bắt đầu lúc {fmt_vn()}, offset={offset}")
 
     poll_min  = int(os.environ.get("POLLING_MINUTES", "4"))
+poll_min  = int(os.environ.get("POLLING_MINUTES", "4"))
 deadline  = time.time() + poll_min * 60
-    processed = 0
-
+print(f"[Bot Handler] Polling {poll_min} phút")
+  
     while time.time() < deadline:
         try:
             updates = get_updates(offset)
