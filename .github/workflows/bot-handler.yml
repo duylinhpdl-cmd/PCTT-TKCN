@@ -2,16 +2,20 @@ name: Bot Handler
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: repo-git-push
+  cancel-in-progress: false
+
 jobs:
   bot-handler:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,23 +31,24 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          POLLING_MINUTES: "4"
         run: python bot_handler.py
 
-      - name: Save state
-        if: always()
+      - name: Save state (có retry)
         run: |
           git config user.name "storm-bot[bot]"
           git config user.email "storm-bot@noreply.github.com"
-
-          # Lấy thay đổi mới nhất từ remote trước
-          git fetch origin main
-          git reset --hard origin/main
-
-          # Copy file state mới vào (đã được bot ghi ra disk)
           git add bot_state.json || true
           git diff --cached --quiet && echo "Không có thay đổi" && exit 0
-
           git commit -m "update bot state [skip ci]"
-          git push && echo "✅ Push OK" || echo "⚠️ Push thất bại — bỏ qua"
+
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main
+            if git push; then
+              echo "✅ Push thành công ở lần thử $i"
+              exit 0
+            fi
+            echo "⚠️ Push thất bại lần $i, thử lại..."
+            sleep $((RANDOM % 5 + 2))
+          done
+          echo "❌ Push thất bại sau 5 lần thử"
         continue-on-error: true
