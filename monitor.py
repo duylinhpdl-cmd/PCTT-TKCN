@@ -121,15 +121,28 @@ def get_page(url, timeout=15):
     r.encoding = r.apparent_encoding or "utf-8"
     return BeautifulSoup(r.text, "html.parser")
 
-def send_telegram(msg):
+def send_telegram(msg, retries=3):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print(msg); return
-    r = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": msg,
-              "parse_mode": "HTML", "disable_web_page_preview": False},
-        timeout=15)
-    print("[TG] ✅ Gửi OK" if r.status_code == 200 else f"[TG] ❌ {r.text[:120]}")
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg,
+               "parse_mode": "HTML", "disable_web_page_preview": False}
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.post(url, json=payload, timeout=30)
+            if r.status_code == 200:
+                print("[TG] ✅ Gửi OK")
+                return
+            else:
+                print(f"[TG] ❌ HTTP {r.status_code}: {r.text[:120]}")
+                return
+        except requests.exceptions.Timeout:
+            print(f"[TG] ⏱ Timeout lần {attempt}/{retries} — thử lại...")
+            time.sleep(3)
+        except Exception as e:
+            print(f"[TG] ❌ Lỗi: {e}")
+            return
+    print(f"[TG] ❌ Bỏ qua sau {retries} lần thử — tin nhắn KHÔNG gửi được")
 
 def in_zone(lat, lon, z):
     if lat is None or lon is None: return False
@@ -684,4 +697,11 @@ def main():
     print("[Bot] Xong.")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"[Bot] ❌ Lỗi nghiêm trọng không lường trước: {e}")
+        import traceback
+        traceback.print_exc()
+        # Không exit(1) để workflow không báo Failure, vẫn tiếp tục lưu state
+
