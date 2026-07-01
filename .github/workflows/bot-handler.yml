@@ -6,11 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-concurrency:
-  group: repo-git-push
-  cancel-in-progress: false
+  contents: read
 
 jobs:
   bot-handler:
@@ -18,37 +14,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - run: pip install requests beautifulsoup4 lxml
-
-      - name: Run bot
+      - name: Khôi phục state
+        uses: actions/cache@v4
+        with:
+          path: bot_state.json
+          key: bot-state-${{ github.run_id }}
+          restore-keys: bot-state-
+      - name: 🤖 Chạy bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python bot_handler.py
-
-      - name: Save state (có retry)
-        run: |
-          git config user.name "storm-bot[bot]"
-          git config user.email "storm-bot@noreply.github.com"
-          git add bot_state.json || true
-          git diff --cached --quiet && echo "Không có thay đổi" && exit 0
-          git commit -m "update bot state [skip ci]"
-
-          for i in 1 2 3 4 5; do
-            git pull --rebase origin main
-            if git push; then
-              echo "✅ Push thành công ở lần thử $i"
-              exit 0
-            fi
-            echo "⚠️ Push thất bại lần $i, thử lại..."
-            sleep $((RANDOM % 5 + 2))
-          done
-          echo "❌ Push thất bại sau 5 lần thử"
-        continue-on-error: true
