@@ -581,9 +581,7 @@ def main():
     offset = state.get("offset", 0)
     print(f"[Bot Handler] Bắt đầu lúc {fmt_vn()}, offset={offset}")
 
-    poll_min  = int(os.environ.get("POLLING_MINUTES", "4"))
-    deadline  = time.time() + poll_min * 60
-    print(f"[Bot Handler] Polling {poll_min} phút")
+    deadline  = time.time() + 8 * 60
     processed = 0
 
     while time.time() < deadline:
