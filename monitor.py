@@ -33,18 +33,42 @@ VN_KW = [
 
 # Các URL listing/đầu mục — KHÔNG có nội dung thật
 LISTING_URLS = [
+    # NCHMF listing/category pages
     "tin-bao-khan-cap-post.html",
     "tin-ap-thap-nhiet-doi-post.html",
+    "bao-ap-thap-nhiet-doi-2049",   # Danh mục NCHMF
+    "bao-khan-cap-2050",
+    "tin-bao-2048",
+    "/vi-VN/1/bao-ap-thap-nhiet-doi-",
+    "/vi-VN/1/bao-khan-cap-",
+    # Báo VN listing
     "thoi-tiet-c270.html",
-    "thoi-su.rss",
-    "xa-hoi.rss",
-    "home.rss",
-    "tin-moi-nhat.rss",
-    "category","/tag/","/chu-de/",
+    "thoi-su.rss","xa-hoi.rss","home.rss","tin-moi-nhat.rss",
+    "/category/","/tag/","/chu-de/","/chuyen-muc/",
+    "?page=","&page=","/trang-",
 ]
 
 def la_trang_listing(url):
     return any(k in url for k in LISTING_URLS)
+
+# Từ khoá khí tượng CỤ THỂ — phải có ít nhất 3 từ trong thân bài
+KW_KHI_TUONG = [
+    "km/h","knot"," kt ","cấp ","mbar","hpa",
+    "vĩ độ","kinh độ","°n","°e","sức gió","gió giật",
+    "lượng mưa","cường độ","di chuyển","hướng tây",
+    "hướng bắc","hướng nam","hướng đông",
+    "tây bắc","tây nam","đông bắc","đông nam",
+    "đổ bộ","ảnh hưởng trực tiếp","vùng biển","ven biển",
+    "đất liền","bờ biển","biển đông",
+    "quảng ninh","hải phòng","thanh hóa","nghệ an",
+    "hà tĩnh","quảng bình","quảng trị","đà nẵng",
+    "quảng nam","quảng ngãi","bình định",
+]
+
+def co_noi_dung_khi_tuong(than_bai):
+    """Thân bài phải có ít nhất 3 từ khoá khí tượng cụ thể."""
+    t = than_bai.lower()
+    return sum(1 for kw in KW_KHI_TUONG if kw in t) >= 3
 
 # ── Bảng tra cứu ──────────────────────────────────────────────────────────────
 INTENSITY_TABLE = [
@@ -338,6 +362,11 @@ def doc_bai_that(url, timeout=10):
 
         if not than_bai:
             print(f"  ⛔ Không đủ nội dung bài: {url[:60]}")
+            return "", None
+
+        # Kiểm tra thêm: phải có từ khoá khí tượng cụ thể
+        if not co_noi_dung_khi_tuong(than_bai):
+            print(f"  ⛔ Thiếu nội dung khí tượng cụ thể: {url[:60]}")
             return "", None
 
         return than_bai, soup
