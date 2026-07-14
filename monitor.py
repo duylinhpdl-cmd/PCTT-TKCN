@@ -191,36 +191,80 @@ def tim_toc_do(text):
     return None
 
 def tim_do_bo(text):
-    """Tìm câu dự kiến đổ bộ trong bài viết."""
+    """Tìm câu dự kiến đổ bộ trong bài viết — nhiều mẫu regex hơn."""
     patterns = [
-        r"dự kiến[^.]{0,150}(?:đổ bộ|ảnh hưởng|vào đất liền)[^.]{0,100}",
-        r"(?:đổ bộ|ảnh hưởng trực tiếp)[^.]{0,150}(?:ngày|giờ|sáng|chiều|tối)[^.]{0,80}",
-        r"(?:ngày|đêm)\s+\d+[^.]{0,100}(?:đổ bộ|ảnh hưởng|vào bờ)[^.]{0,80}",
-        r"(?:khoảng|vào)\s+(?:ngày|đêm|sáng|chiều)\s+\d+[^.]{0,150}",
+        # Dạng: "dự kiến đổ bộ vào ... ngày 15/9"
+        r"dự kiến[^.]{0,80}(?:đổ bộ|ảnh hưởng|vào đất liền)[^.]{0,120}",
+        # Dạng: "đổ bộ trực tiếp vào ... lúc ..."
+        r"(?:đổ bộ|ảnh hưởng trực tiếp)[^.]{0,80}(?:ngày|giờ|sáng|chiều|tối|đêm)[^.]{0,100}",
+        # Dạng: "ngày 15/9 ... đổ bộ"
+        r"(?:ngày|đêm)\s+\d+[^.]{0,80}(?:đổ bộ|ảnh hưởng|vào bờ)[^.]{0,80}",
+        # Dạng: "vào ngày 15 tháng 9"
+        r"vào\s+(?:ngày|đêm|sáng|chiều|tối)\s+\d+[^.]{0,120}",
+        # Dạng: "khoảng 24-48 giờ tới"
+        r"khoảng\s+\d+[^.]{0,30}giờ\s+tới[^.]{0,80}",
+        # Dạng: "trong 12 giờ tới ... đổ bộ"
+        r"trong\s+\d+[^.]{0,20}giờ\s+tới[^.]{0,80}",
+        # Dạng: "đêm nay / sáng mai / chiều tối nay sẽ đổ bộ"
+        r"(?:đêm nay|sáng mai|chiều tối|hôm nay|ngày mai)[^.]{0,80}(?:đổ bộ|ảnh hưởng|vào bờ)[^.]{0,60}",
+        # Dạng: "sẽ đổ bộ vào ..."
+        r"sẽ\s+(?:đổ bộ|ảnh hưởng)[^.]{0,150}",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            result = m.group(0).strip()[:200]
-            # Dọn dẹp khoảng trắng thừa
-            result = re.sub(r'\s+', ' ', result)
+            result = re.sub(r'\s+', ' ', m.group(0).strip())[:200]
             return result
     return ""
+
+def suy_do_bo_tu_khu_vuc(khu_vuc, lat=None, lon=None, huong=""):
+    """
+    Suy luận dự kiến đổ bộ từ khu vực ảnh hưởng — thông minh hơn.
+    Nếu đã tìm thấy tỉnh VN trong khu vực ảnh hưởng
+    → bão đang ảnh hưởng trực tiếp / sắp đổ bộ.
+    """
+    if not khu_vuc: return "Chưa đủ dữ liệu"
+
+    kv = khu_vuc.lower()
+
+    # Danh sách tỉnh/vùng VN — nếu có → bão đang ở rất gần
+    tinh_vn = [
+        "bắc bộ","trung bộ","nam bộ","quảng ninh","hải phòng","thái bình",
+        "nam định","thanh hóa","nghệ an","hà tĩnh","quảng bình","quảng trị",
+        "thừa thiên","đà nẵng","quảng nam","quảng ngãi","bình định","phú yên",
+        "khánh hòa","ninh thuận","bình thuận","vũng tàu","cà mau","kiên giang",
+        "việt nam","bờ biển việt",
+    ]
+    for t in tinh_vn:
+        if t in kv:
+            return f"⚡ Đang ảnh hưởng / sắp đổ bộ vào {khu_vuc}"
+
+    # Nếu đang ở Biển Đông → tính theo khoảng cách
+    if lat and lon:
+        return tinh_do_bo_toa_do(lat, lon, huong)
+
+    if "biển đông" in kv:
+        return "Đang trong khu vực Biển Đông, theo dõi sát"
+
+    return "Chưa đủ dữ liệu"
 
 def tinh_do_bo_toa_do(lat, lon, huong_raw=""):
     """Ước tính dự kiến đổ bộ từ tọa độ."""
     if lat is None: return "Chưa đủ dữ liệu"
     h = huong_raw.upper()
-    vao_vn = any(k in h for k in ["W","NW","WNW","WSW","SW"])
+    vao_vn = any(k in h for k in ["W","NW","WNW","WSW","SW",
+                                    "TÂY","BẮC","TÂY BẮC","TÂY NAM"])
     if in_bien_dong(lat, lon):
         kc = abs(lon - 109) * 111
         if kc < 150: return "⚡ Trong vòng 12 giờ tới"
         if kc < 350: return "Khoảng 1-2 ngày tới"
         return "Khoảng 2-4 ngày tới"
     if lon > 130:
-        return "Khoảng 5-7 ngày nếu duy trì hướng" if vao_vn else "Chưa xác định"
+        return "Khoảng 5-7 ngày nếu duy trì hướng hiện tại" if vao_vn \
+               else "Chưa xác định — cần theo dõi thêm"
     if lon > 120:
-        return "Khoảng 3-5 ngày tới" if vao_vn else "Chưa xác định"
+        return "Khoảng 3-5 ngày tới" if vao_vn \
+               else "Chưa xác định — hướng chưa rõ"
     return "Khoảng 1-3 ngày tới" if vao_vn else "Chưa xác định"
 
 def khu_vuc_toa_do(lat, lon):
@@ -231,19 +275,87 @@ def khu_vuc_toa_do(lat, lon):
     if 116<=lon<=128 and 5<=lat<=22:  return "Tây Philippines"
     return f"Tây TBD ({lat:.0f}°N {lon:.0f}°E)"
 
-# ── Kiểm tra bài viết có nội dung thật không ─────────────────────────────────
-MIN_NOI_DUNG = 200   # Tối thiểu 200 ký tự nội dung mới coi là có thông tin
+# ── Đọc nội dung bài viết thật (không phải trang listing) ────────────────────
+# CSS selectors của phần thân bài cho từng báo
+ARTICLE_SELECTORS = [
+    "article .content",
+    "article .body",
+    ".article-body",
+    ".article-content",
+    ".content-detail",
+    ".detail-content",
+    ".fck_detail",          # VnExpress
+    ".singular-content",
+    ".post-content",
+    ".entry-content",
+    ".content_detail",      # Tuổi Trẻ
+    ".detail__content",     # Thanh Niên
+    ".dt-news__content",    # Dân Trí
+    "article",
+    "[itemprop='articleBody']",
+]
 
-def co_noi_dung_that(text, url):
-    """Kiểm tra bài viết có đủ nội dung thật để trích xuất không."""
+# Số ký tự tối thiểu của THÂN BÀI (không tính header/footer/nav)
+MIN_THAN_BAI = 400
+
+def doc_bai_that(url, timeout=10):
+    """
+    Đọc và trả về NỘI DUNG THÂN BÀI thật sự.
+    Dùng CSS selectors để lấy đúng phần body bài viết,
+    bỏ qua header/nav/sidebar/listing.
+    Trả về (than_bai_text, soup) hoặc ("", None) nếu không đủ nội dung.
+    """
     if la_trang_listing(url):
-        return False
-    if len(text) < MIN_NOI_DUNG:
-        return False
-    # Phải có ít nhất 1 từ khoá thời tiết
-    if not has_kw(text):
-        return False
-    return True
+        print(f"  ⛔ Bỏ qua trang listing: {url[:60]}")
+        return "", None
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=timeout)
+        r.encoding = r.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        # Xoá các phần không phải nội dung
+        for tag in soup(["script","style","nav","header","footer",
+                         "aside","[class*='related']","[class*='recommend']",
+                         "[class*='suggest']","[class*='comment']",
+                         "[class*='advertisement']","[class*='banner']"]):
+            tag.decompose()
+
+        # Thử từng selector để lấy thân bài
+        than_bai = ""
+        for sel in ARTICLE_SELECTORS:
+            el = soup.select_one(sel)
+            if el:
+                text = el.get_text(separator=" ", strip=True)
+                if len(text) >= MIN_THAN_BAI and has_kw(text):
+                    than_bai = text
+                    break
+
+        # Fallback: lấy toàn bộ nhưng phải dài hơn nhiều
+        if not than_bai:
+            full = soup.get_text(separator=" ", strip=True)
+            if len(full) >= MIN_THAN_BAI * 3 and has_kw(full):
+                than_bai = full
+
+        if not than_bai:
+            print(f"  ⛔ Không đủ nội dung bài: {url[:60]}")
+            return "", None
+
+        return than_bai, soup
+
+    except Exception as e:
+        print(f"  ⛔ Lỗi đọc bài: {url[:60]}: {e}")
+        return "", None
+
+def co_du_lieu_that(khu_vuc, do_bo, lat, lon):
+    """
+    Kiểm tra bài có đủ dữ liệu thật để đưa vào báo cáo không.
+    Phải có ÍT NHẤT 1 trong: khu vực thật HOẶC tọa độ thật.
+    """
+    co_khu_vuc = (khu_vuc and
+                  khu_vuc not in ("Chưa xác định","Biển Đông / Việt Nam","") and
+                  len(khu_vuc) > 5)
+    co_toa_do  = (lat is not None and lon is not None)
+    return co_khu_vuc or co_toa_do
 
 # ── Tạo storm object chuẩn ───────────────────────────────────────────────────
 def make_storm(ten, loai, cap_so, lat, lon, huong, khu_vuc,
@@ -340,7 +452,6 @@ def scrape_jtwc():
 # ── Nguồn 3: NCHMF — đọc nội dung bài thật ──────────────────────────────────
 def scrape_nchmf():
     storms = []
-    # Lấy danh sách link từ trang listing
     listing_urls = [
         "https://nchmf.gov.vn/Kttvsite/vi-VN/1/tin-bao-khan-cap-post.html",
         "https://nchmf.gov.vn/Kttvsite/vi-VN/1/tin-ap-thap-nhiet-doi-post.html",
@@ -354,37 +465,49 @@ def scrape_nchmf():
                 href = a.get("href","")
                 text = a.get_text(strip=True)
                 if not has_kw(text): continue
-                # Bỏ qua link listing
                 full = href if href.startswith("http") else "https://nchmf.gov.vn" + href
-                if not la_trang_listing(full) and full not in bai_urls:
+                # Chỉ lấy link bài viết thật (có số ID bài, không phải trang listing)
+                if not la_trang_listing(full) and full not in [u for _,u in bai_urls]:
                     bai_urls.append((text, full))
         except Exception as e: print(f"[NCHMF listing] {e}")
 
-    # Đọc từng bài viết thật
+    print(f"[NCHMF] Tìm thấy {len(bai_urls)} link bài viết")
+
     for tieu_de, url in bai_urls[:5]:
         try:
-            soup, noi_dung = doc_trang(url)
-            if not co_noi_dung_that(noi_dung, url):
-                print(f"[NCHMF] Bỏ qua (không đủ nội dung): {url[:60]}")
+            # Dùng doc_bai_that — lấy đúng thân bài, không lấy listing
+            than_bai, soup = doc_bai_that(url)
+            if not than_bai:
+                continue  # Không đủ nội dung → bỏ qua hoàn toàn
+
+            all_text = tieu_de + " " + than_bai
+            loai, cap_so = dich_cuong_do(all_text)
+            if cap_so < 0:
+                print(f"[NCHMF] Bỏ qua (không nhận ra loại): {tieu_de[:50]}")
                 continue
 
-            all_text = tieu_de + " " + noi_dung
-            loai, cap_so = dich_cuong_do(all_text)
             m_so  = re.search(r"bão số\s*(\d+)", all_text, re.IGNORECASE)
             ten   = f"Bão số {m_so.group(1)}" if m_so else "Chưa đặt tên"
-            huong = tim_huong_vi(all_text)
-            kv    = tim_tinh(all_text) or "Biển Đông / Việt Nam"
-            lat, lon = parse_latlon(all_text)
-            gio_km = tim_toc_do(all_text)
+            huong = tim_huong_vi(than_bai)   # Chỉ tìm trong thân bài
+            kv    = tim_tinh(than_bai)        # Chỉ tìm trong thân bài
+            lat, lon = parse_latlon(than_bai)
+            gio_km = tim_toc_do(than_bai)
 
-            # Ưu tiên câu dự kiến đổ bộ từ bài viết
-            do_bo = tim_do_bo(all_text)
+            # Bắt buộc phải có khu vực HOẶC tọa độ thật
+            if not co_du_lieu_that(kv, "", lat, lon):
+                print(f"[NCHMF] Bỏ qua (thiếu dữ liệu thật): {tieu_de[:50]}")
+                continue
+
+            do_bo = tim_do_bo(than_bai)
             if not do_bo:
+                do_bo = suy_do_bo_tu_khu_vuc(kv, lat, lon, huong)
+            if not do_bo or do_bo == "Chưa đủ dữ liệu":
                 do_bo = tinh_do_bo_toa_do(lat, lon, huong)
 
             storms.append(make_storm(
                 ten=ten, loai=loai, cap_so=cap_so,
-                lat=lat, lon=lon, huong=huong, khu_vuc=kv,
+                lat=lat, lon=lon, huong=huong,
+                khu_vuc=kv if kv else khu_vuc_toa_do(lat, lon),
                 do_bo=do_bo, url=url, source="NCHMF",
                 title=tieu_de, gio_km=gio_km,
             ))
@@ -393,7 +516,7 @@ def scrape_nchmf():
     return storms
 
 # ── Nguồn 4-7: Báo VN — đọc nội dung bài thật từ RSS ────────────────────────
-def _scrape_bao_rss(rss_urls, source, base=""):
+def _scrape_bao_rss(rss_urls, source):
     storms = []
     for rss in rss_urls:
         try:
@@ -405,28 +528,41 @@ def _scrape_bao_rss(rss_urls, source, base=""):
                     item.findtext("description") or "", "html.parser"
                 ).get_text()
 
-                # Bước 1: lọc theo tiêu đề/mô tả
+                # Bước 1: lọc nhanh theo tiêu đề
                 if not has_kw(title + " " + desc): continue
 
-                # Bước 2: đọc nội dung bài thật
-                _, noi_dung = doc_trang(link)
-                if not co_noi_dung_that(noi_dung, link):
-                    print(f"[{source}] Bỏ qua (ít nội dung): {title[:50]}")
+                # Bước 2: đọc đúng thân bài (không phải toàn trang)
+                than_bai, _ = doc_bai_that(link)
+                if not than_bai:
+                    print(f"[{source}] Bỏ qua (không có thân bài): {title[:50]}")
                     continue
 
-                all_text = title + " " + noi_dung
+                all_text = title + " " + than_bai
                 loai, cap_so = dich_cuong_do(all_text)
+                if cap_so < 0: continue
+
                 m_so  = re.search(r"bão số\s*(\d+)", all_text, re.IGNORECASE)
                 ten   = f"Bão số {m_so.group(1)}" if m_so else "Chưa đặt tên"
-                huong = tim_huong_vi(all_text)
-                kv    = tim_tinh(all_text) or "Biển Đông / Việt Nam"
-                lat, lon = parse_latlon(all_text)
-                gio_km = tim_toc_do(all_text)
-                do_bo  = tim_do_bo(all_text) or tinh_do_bo_toa_do(lat, lon, huong)
+                huong = tim_huong_vi(than_bai)
+                kv    = tim_tinh(than_bai)
+                lat, lon = parse_latlon(than_bai)
+                gio_km = tim_toc_do(than_bai)
+
+                # Bắt buộc có dữ liệu thật → nếu không có khu vực lẫn tọa độ → bỏ qua
+                if not co_du_lieu_that(kv, "", lat, lon):
+                    print(f"[{source}] Bỏ qua (thiếu dữ liệu thật): {title[:50]}")
+                    continue
+
+                do_bo = tim_do_bo(than_bai)
+                if not do_bo:
+                    do_bo = suy_do_bo_tu_khu_vuc(kv, lat, lon, huong)
+                if not do_bo or do_bo == "Chưa đủ dữ liệu":
+                    do_bo = tinh_do_bo_toa_do(lat, lon, huong)
 
                 storms.append(make_storm(
                     ten=ten, loai=loai, cap_so=cap_so,
-                    lat=lat, lon=lon, huong=huong, khu_vuc=kv,
+                    lat=lat, lon=lon, huong=huong,
+                    khu_vuc=kv if kv else khu_vuc_toa_do(lat, lon),
                     do_bo=do_bo, url=link, source=source,
                     title=title, gio_km=gio_km,
                 ))
