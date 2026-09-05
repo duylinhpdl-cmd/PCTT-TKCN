@@ -1,9 +1,8 @@
 """
 🌀 Storm Monitor Bot v21
-- Chỉ lấy thông tin từ nchmf.gov.vn (nguồn chính thức Việt Nam)
-- Chỉ thông báo khi có bản tin bão/áp thấp nhiệt đới thật sự
-- Gửi kèm ảnh đường đi cơn bão từ NCHMF
-- Không thông báo khi trang hiển thị "Đang cập nhật dữ liệu"
+- CHỈ lấy từ nchmf.gov.vn
+- Chỉ gửi khi có nội dung thật về bão/ATNĐ (không phải "Đang cập nhật")
+- Gửi kèm ảnh đường đi cơn bão nếu tìm được
 """
 
 import os, json, re, hashlib, requests, time
@@ -16,29 +15,51 @@ TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 STATE_FILE = "state.json"
 VN_TZ = timezone(timedelta(hours=7))
 
-NCHMF_BAO_URL = "https://nchmf.gov.vn/kttvsite/vi-VN/1/bao-ap-thap-nhiet-doi-2049-15.html"
-NCHMF_BASE    = "https://nchmf.gov.vn"
-KTTV_BASE     = "https://kttv.gov.vn"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
+}
 
-HEADERS = {"User-Agent": (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
-)}
+BASE_NCHMF = "https://nchmf.gov.vn"
 
-# Khi không có bão, NCHMF hiển thị chuỗi này
-KHONG_CO_BAO_KW = ["đang cập nhật dữ liệu", "chua co tin bao"]
-
-# Từ khoá PHẢI có trong bản tin bão thật
-TU_KHOA_BAN_TIN = [
-    "tin bão", "tin áp thấp", "cơn bão", "bão số",
-    "áp thấp nhiệt đới", "tin khẩn", "cảnh báo bão",
+NCHMF_LISTING = [
+    f"{BASE_NCHMF}/kttvsite/vi-VN/1/bao-ap-thap-nhiet-doi-2049-15.html",
+    f"{BASE_NCHMF}/kttvsite/vi-VN/1/tin-bao-khan-cap-post.html",
+    f"{BASE_NCHMF}/kttvsite/vi-VN/1/tin-ap-thap-nhiet-doi-post.html",
 ]
 
-CAP_GIO = {
-    5:"Cấp 12+ (≥118 km/h)", 4:"Cấp 11-12 (103-117 km/h)",
-    3:"Cấp 8-12 (63-117 km/h)", 2:"Cấp 6-7 (39-62 km/h)",
-    1:"Cấp 6 (39-49 km/h)", 0:"Dưới cấp 6",
-}
+KHONG_CO_SU_KIEN = [
+    "đang cập nhật dữ liệu",
+    "đang cập nhật",
+    "hiện không có",
+    "không có bão",
+    "không có áp thấp",
+    "currently no",
+    "no active",
+]
+
+KW_BAO_THAT = [
+    "áp thấp nhiệt đới","áp thấp nhiệt đới mạnh","bão số",
+    "cơn bão","bão nhiệt đới","siêu bão",
+    "tropical depression","tropical storm","typhoon",
+]
+
+KW_KHI_TUONG = [
+    "km/h","cấp ","sức gió","gió giật","hướng tây","hướng bắc",
+    "hướng nam","hướng đông","tây bắc","tây nam","đông bắc","đông nam",
+    "đổ bộ","ảnh hưởng trực tiếp","vùng biển","ven biển","đất liền",
+    "vĩ độ","kinh độ","mbar","hpa","knot",
+    "quảng ninh","hải phòng","thanh hóa","nghệ an","hà tĩnh",
+    "quảng bình","quảng trị","đà nẵng","quảng nam","quảng ngãi",
+    "bình định","phú yên","khánh hòa","biển đông",
+]
+
+IMG_STORM_PATTERNS = [
+    r"track", r"duong-di", r"duongdi", r"storm", r"bao_",
+    r"atnhietdoi", r"typhoon", r"\.png$", r"\.jpg$", r"\.gif$",
+]
 
 TINH_VEN_BIEN = {
     "quảng ninh":"Quảng Ninh","hải phòng":"Hải Phòng","thái bình":"Thái Bình",
@@ -50,6 +71,15 @@ TINH_VEN_BIEN = {
     "vũng tàu":"Bà Rịa-Vũng Tàu","cà mau":"Cà Mau","kiên giang":"Kiên Giang",
     "miền bắc":"Các tỉnh Bắc Bộ","miền trung":"Các tỉnh Trung Bộ",
     "miền nam":"Các tỉnh Nam Bộ","bắc bộ":"Bắc Bộ","trung bộ":"Trung Bộ",
+}
+
+CAP_GIO_VI = {
+    5:"Cấp 12+ (≥118 km/h) — Siêu bão",
+    4:"Cấp 11-12 (103-117 km/h) — Bão rất mạnh",
+    3:"Cấp 8-12 (63-117 km/h) — Bão",
+    2:"Cấp 6-7 (39-62 km/h) — Bão nhiệt đới",
+    1:"Cấp 6 (39-49 km/h) — Áp thấp nhiệt đới",
+    0:"Dưới cấp 6",
 }
 
 # ── Tiện ích ──────────────────────────────────────────────────────────────────
@@ -66,265 +96,295 @@ def save_state(s):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(s, f, ensure_ascii=False, indent=2)
 
-def get_page(url, timeout=15):
-    r = requests.get(url, headers=HEADERS, timeout=timeout)
-    r.encoding = r.apparent_encoding or "utf-8"
-    return BeautifulSoup(r.text, "html.parser")
-
-def tim_tinh(text):
-    t = text.lower()
-    found = []
-    for kw, ten in TINH_VEN_BIEN.items():
-        if kw in t and ten not in found: found.append(ten)
-    return ", ".join(found[:4]) if found else ""
-
-def tim_huong(text):
-    t = text.lower()
-    for kw, val in [
-        ("tây bắc","Tây Bắc"),("tây nam","Tây Nam"),
-        ("đông bắc","Đông Bắc"),("đông nam","Đông Nam"),
-        ("hướng tây ","Tây"),("hướng bắc","Bắc"),
-        ("hướng nam","Nam"),("hướng đông","Đông"),
-    ]:
-        if kw in t: return val
-    return "Chưa xác định"
-
-def tim_cap_so(text):
-    cap = 0
-    m = re.search(r"cấp\s*(\d+)", text.lower())
-    if m: cap = max(cap, int(m.group(1)))
-    m2 = re.search(r"(\d+)\s*km/h", text, re.IGNORECASE)
-    if m2:
-        km = int(m2.group(1))
-        if km >= 118: cap = max(cap, 5)
-        elif km >= 103: cap = max(cap, 4)
-        elif km >= 63: cap = max(cap, 3)
-        elif km >= 39: cap = max(cap, 2)
-        else: cap = max(cap, 1)
-    return cap
-
-def tim_do_bo(text):
-    patterns = [
-        r"dự kiến[^.]{0,80}(?:đổ bộ|ảnh hưởng|vào đất liền)[^.]{0,120}",
-        r"(?:đổ bộ|ảnh hưởng trực tiếp)[^.]{0,80}(?:ngày|giờ|sáng|chiều|tối|đêm)[^.]{0,100}",
-        r"(?:đêm nay|sáng mai|chiều tối|hôm nay|ngày mai)[^.]{0,80}(?:đổ bộ|ảnh hưởng)[^.]{0,60}",
-        r"sẽ\s+(?:đổ bộ|ảnh hưởng)[^.]{0,150}",
-    ]
-    for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m: return re.sub(r'\s+', ' ', m.group(0).strip())[:200]
-    return ""
-
-def la_ban_tin_that(title, noi_dung):
-    """Kiểm tra có phải bản tin bão thật không."""
-    combined = (title + " " + noi_dung).lower()
-    if any(k in combined for k in KHONG_CO_BAO_KW):
-        return False
-    return any(k in combined for k in TU_KHOA_BAN_TIN)
-
-def lay_anh_duong_di(soup):
-    """Tìm ảnh đường đi bão trong soup."""
-    for img in soup.find_all("img", src=True):
-        src = img.get("src", "")
-        if any(k in src.lower() for k in ["dbqg_", "duong_di", "thoitiet", "track_"]):
-            if src.startswith("http"): return src
-            if src.startswith("//"): return "https:" + src
-            if src.startswith("/"): return KTTV_BASE + src
-    return None
-
-# ── Telegram API ──────────────────────────────────────────────────────────────
-def gui_telegram(text, photo_url=None):
-    """Gửi tin nhắn đến tất cả Chat ID, kèm ảnh nếu có."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print(text); return
-    url_msg   = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    url_photo = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    ids = [i.strip() for i in TELEGRAM_CHAT_ID.split(",") if i.strip()]
-
-    for cid in ids:
-        _gui_mot_chat(cid, text, photo_url, url_msg, url_photo)
-        if len(ids) > 1: time.sleep(0.3)
-
-def _gui_mot_chat(cid, text, photo_url, url_msg, url_photo, retries=3):
-    # Thử gửi ảnh + caption
-    if photo_url:
-        for i in range(1, retries+1):
-            try:
-                r = requests.post(url_photo, json={
-                    "chat_id": cid, "photo": photo_url,
-                    "caption": text, "parse_mode": "HTML",
-                }, timeout=30)
-                if r.status_code == 200:
-                    print(f"[TG] ✅ Ảnh+caption → {cid}"); return
-                print(f"[TG] ⚠️ Ảnh thất bại ({r.status_code}) — chuyển gửi text")
-                break
-            except requests.exceptions.Timeout:
-                print(f"[TG] ⏱ Timeout ảnh {i}/{retries}"); time.sleep(3)
-            except Exception as e:
-                print(f"[TG] ❌ Lỗi ảnh: {e}"); break
-
-    # Gửi text thuần
-    for i in range(1, retries+1):
-        try:
-            r = requests.post(url_msg, json={
-                "chat_id": cid, "text": text,
-                "parse_mode": "HTML", "disable_web_page_preview": False,
-            }, timeout=30)
-            if r.status_code == 200:
-                print(f"[TG] ✅ Text → {cid}"); return
-            print(f"[TG] ❌ {cid}: {r.text[:80]}"); return
-        except requests.exceptions.Timeout:
-            print(f"[TG] ⏱ Timeout text {i}/{retries}"); time.sleep(3)
-        except Exception as e:
-            print(f"[TG] ❌ {e}"); return
-
-# ── Scrape NCHMF ──────────────────────────────────────────────────────────────
-def scrape_nchmf():
-    """
-    Scrape trang bão NCHMF.
-    - Nếu "Đang cập nhật dữ liệu" → trả về []
-    - Nếu có bản tin → trả về list [{title, url, anh}]
-    """
-    results = []
-    try:
-        soup = get_page(NCHMF_BAO_URL)
-        page_text = soup.get_text(separator=" ", strip=True)
-
-        # Kiểm tra không có bão
-        if any(k in page_text.lower() for k in KHONG_CO_BAO_KW):
-            print("[NCHMF] → 'Đang cập nhật dữ liệu': Không có bão")
-            return []
-
-        # Tìm link bản tin bão — có ảnh thumbnail kèm theo
-        for a in soup.find_all("a", href=True):
-            href  = a.get("href", "")
-            title = a.get_text(strip=True)
-            img   = a.find("img")
-
-            # Chỉ lấy link có từ khoá bão
-            href_l  = href.lower()
-            title_l = title.lower()
-            if not any(k in href_l or k in title_l for k in
-                       ["bao-so","tin-bao","ap-thap","cuoi-cung","khan-cap","post5"]):
-                continue
-            if not title or len(title) < 5:
-                continue
-
-            full_url = href if href.startswith("http") else NCHMF_BASE + href
-
-            # Lấy ảnh thumbnail từ thẻ <a>
-            anh = None
-            if img:
-                src = img.get("src","")
-                if src.startswith("http"): anh = src
-                elif src.startswith("//"): anh = "https:" + src
-                elif src.startswith("/"): anh = KTTV_BASE + src
-
-            if full_url not in [x["url"] for x in results]:
-                results.append({"title": title, "url": full_url, "anh": anh})
-                print(f"[NCHMF] Bản tin: {title[:60]}")
-
-        print(f"[NCHMF] Tổng: {len(results)} bản tin")
-    except Exception as e:
-        print(f"[NCHMF] Lỗi: {e}")
-    return results
-
-def doc_ban_tin_day_du(url):
-    """Đọc nội dung đầy đủ của bản tin và lấy ảnh đường đi."""
-    try:
-        soup = get_page(url)
-        for tag in soup(["script","style","nav","header","footer","aside"]):
-            tag.decompose()
-
-        anh = lay_anh_duong_di(soup)
-
-        body = ""
-        for sel in [".fck_detail",".content-detail",".article-body","article",".post-content"]:
-            el = soup.select_one(sel)
-            if el:
-                body = el.get_text(separator=" ", strip=True)
-                if len(body) > 100: break
-        if not body:
-            body = soup.get_text(separator=" ", strip=True)
-
-        return body[:4000], anh
-    except Exception as e:
-        print(f"[doc_ban_tin] {e}")
-        return "", None
-
-# ── Format tin nhắn ───────────────────────────────────────────────────────────
 def gio_tiep_theo():
     h = now_vn().hour
     for g in [2,8,14,20]:
         if g > h: return f"{g:02d}:00"
     return "02:00 (ngày mai)"
 
-def gio_bao_cao():
+def gio_bao_cao_hien_tai():
     h = now_vn().hour
     if 1<=h<7:   return "02:00"
     if 7<=h<13:  return "08:00"
     if 13<=h<19: return "14:00"
     return "20:00"
 
-def format_ban_tin(title, noi_dung, url, stt):
-    """Tạo thẻ thông tin đầy đủ 5 trường từ bản tin NCHMF."""
-    all_text = title + " " + (noi_dung or "")
-    t_low    = all_text.lower()
+# ── Đọc trang web ─────────────────────────────────────────────────────────────
+def get_soup(url, timeout=12):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=timeout)
+        r.encoding = r.apparent_encoding or "utf-8"
+        return BeautifulSoup(r.text, "html.parser")
+    except Exception as e:
+        print(f"[HTTP] {url[:60]}: {e}")
+        return None
 
-    # Loại + icon
-    if "siêu bão" in t_low:
-        loai, cap_so, icon = "Siêu bão", 5, "🌀🌀"
-    elif any(k in t_low for k in ["typhoon","bão số","cơn bão","tin bão"]):
-        loai, cap_so, icon = "Bão", 3, "🌀"
-    elif "bão nhiệt đới" in t_low or "tropical storm" in t_low:
-        loai, cap_so, icon = "Bão nhiệt đới", 2, "🌪️"
-    elif "áp thấp nhiệt đới" in t_low or "depression" in t_low:
-        loai, cap_so, icon = "Áp thấp nhiệt đới", 1, "⚠️"
+def get_text_sach(soup):
+    if not soup: return ""
+    for tag in soup(["script","style","nav","header","footer","aside"]):
+        tag.decompose()
+    return re.sub(r'\s+', ' ', soup.get_text(separator=" ")).strip()
+
+# ── Kiểm tra nội dung ─────────────────────────────────────────────────────────
+def la_khong_co_su_kien(text):
+    t = text.lower()
+    return any(k in t for k in KHONG_CO_SU_KIEN)
+
+def co_bao_that(text):
+    t = text.lower()
+    return any(k in t for k in KW_BAO_THAT)
+
+def du_noi_dung_khi_tuong(text):
+    t = text.lower()
+    return sum(1 for k in KW_KHI_TUONG if k in t) >= 2
+
+# ── Tìm ảnh đường đi bão ──────────────────────────────────────────────────────
+def tim_anh_duong_di(soup, base_url):
+    if not soup: return None
+    imgs = soup.find_all("img", src=True)
+    candidates = []
+    for img in imgs:
+        src = img.get("src","")
+        alt = (img.get("alt","") or "").lower()
+        src_lower = src.lower()
+        if any(k in src_lower for k in ["logo","icon","banner","avatar",
+                                         "button","arrow","bullet","star"]):
+            continue
+        if any(k in alt for k in ["logo","icon","banner"]):
+            continue
+        score = 0
+        for pat in IMG_STORM_PATTERNS:
+            if re.search(pat, src_lower):
+                score += 2
+        if "upload" in src_lower or "image" in src_lower:
+            score += 1
+        if score > 0:
+            candidates.append((score, src))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    best_src = candidates[0][1]
+    if best_src.startswith("http"):
+        return best_src
+    if best_src.startswith("//"):
+        return "https:" + best_src
+    if best_src.startswith("/"):
+        return BASE_NCHMF + best_src
+    return base_url.rstrip("/") + "/" + best_src
+
+# ── Trích xuất thông tin bão ──────────────────────────────────────────────────
+def trich_xuat_bao(text, title=""):
+    all_text = title + " " + text
+    m_so = re.search(r"bão số\s*(\d+)", all_text, re.IGNORECASE)
+    m_atnđ = re.search(r"áp thấp nhiệt đới", all_text, re.IGNORECASE)
+    if m_so:
+        ten = f"Bão số {m_so.group(1)}"
+        loai = "Bão"; cap_so = 3
+    elif m_atnđ:
+        ten = "Áp thấp nhiệt đới"
+        loai = "Áp thấp nhiệt đới"; cap_so = 1
+    elif re.search(r"siêu bão", all_text, re.IGNORECASE):
+        ten = "Siêu bão"; loai = "Siêu bão"; cap_so = 5
+    elif re.search(r"cơn bão|bão mạnh|bão nhiệt đới", all_text, re.IGNORECASE):
+        ten = "Bão nhiệt đới"; loai = "Bão"; cap_so = 3
     else:
-        loai, cap_so, icon = "Vùng áp thấp", 0, "🔵"
+        ten = "Hệ thống thời tiết nguy hiểm"
+        loai = "Cần theo dõi"; cap_so = 0
 
-    # Cấp thực tế từ nội dung
-    cap_thuc = tim_cap_so(all_text)
-    if cap_thuc > cap_so: cap_so = cap_thuc
-    cap_gio  = CAP_GIO.get(cap_so, "Không xác định")
+    m_cap = re.search(r"cấp\s*(\d+)", all_text, re.IGNORECASE)
+    if m_cap:
+        c = int(m_cap.group(1))
+        if c >= 12: cap_so = 5
+        elif c >= 11: cap_so = 4
+        elif c >= 8: cap_so = 3
+        elif c >= 6: cap_so = max(cap_so, 2)
 
-    # Tên bão
-    m_so = re.search(r"bão số\s*(\d+)", t_low)
-    ten  = f"Bão số {m_so.group(1)}" if m_so else "Chưa đặt tên"
+    m_gio = re.search(r"(\d+)\s*km/h", all_text, re.IGNORECASE)
+    gio_str = f" — {m_gio.group(1)} km/h" if m_gio else ""
+    cap_gio = CAP_GIO_VI.get(cap_so,"?") + gio_str
 
-    # 5 trường
-    huong = tim_huong(all_text)
-    kv    = tim_tinh(all_text)
-    if not kv: kv = "Biển Đông / Việt Nam"
-    do_bo = tim_do_bo(all_text)
+    huong = "Chưa xác định"
+    t = all_text.lower()
+    for kw, val in [
+        ("tây bắc","Tây Bắc"),("tây nam","Tây Nam"),
+        ("đông bắc","Đông Bắc"),("đông nam","Đông Nam"),
+        ("hướng tây ","Tây"),("hướng bắc","Bắc"),
+        ("hướng nam","Nam"),("hướng đông","Đông"),
+    ]:
+        if kw in t: huong = val; break
+
+    kv_found = []
+    for kw, ten_tinh in TINH_VEN_BIEN.items():
+        if kw in t and ten_tinh not in kv_found:
+            kv_found.append(ten_tinh)
+    khu_vuc = ", ".join(kv_found[:4]) if kv_found else "Biển Đông"
+
+    do_bo = ""
+    patterns = [
+        r"dự kiến[^.]{0,120}(?:đổ bộ|ảnh hưởng|vào đất liền)[^.]{0,100}",
+        r"(?:đổ bộ|ảnh hưởng trực tiếp)[^.]{0,80}(?:ngày|giờ|đêm|sáng)[^.]{0,80}",
+        r"(?:đêm nay|sáng mai|hôm nay|ngày mai)[^.]{0,80}(?:đổ bộ|ảnh hưởng)[^.]{0,60}",
+        r"sẽ\s+(?:đổ bộ|ảnh hưởng)[^.]{0,150}",
+        r"trong\s+\d+[^.]{0,20}giờ[^.]{0,60}",
+    ]
+    for pat in patterns:
+        m = re.search(pat, all_text, re.IGNORECASE)
+        if m:
+            do_bo = re.sub(r'\s+',' ', m.group(0).strip())[:180]
+            break
     if not do_bo:
-        tinh_found = any(kw in kv.lower() for kw in TINH_VEN_BIEN)
-        do_bo = f"⚡ Đang ảnh hưởng / sắp đổ bộ vào {kv}" if tinh_found \
-                else "Theo dõi sát diễn biến"
+        if kv_found:
+            do_bo = f"⚡ Đang ảnh hưởng / sắp đổ bộ vào {', '.join(kv_found[:2])}"
+        else:
+            do_bo = "Đang theo dõi — xem bản tin chi tiết"
 
-    return (
-        f"{icon} <b>BẢN TIN {loai.upper()} #{stt}</b>\n"
-        f"📋 {title}\n"
-        f"{'─'*22}\n"
-        f"1️⃣ <b>Tên:</b> {ten}\n"
-        f"2️⃣ <b>Cấp độ:</b> {loai} ({cap_gio})\n"
-        f"3️⃣ <b>Hướng di chuyển:</b> {huong}\n"
-        f"4️⃣ <b>Khu vực ảnh hưởng:</b> {kv}\n"
-        f"5️⃣ <b>Dự kiến đổ bộ VN:</b> {do_bo}\n"
-        f"📡 Nguồn: Trung tâm Khí tượng Thủy văn Quốc gia\n"
-        f"🔗 <a href='{url}'>Xem bản tin đầy đủ</a>"
-    )
+    return {
+        "ten": ten, "loai": loai, "cap_so": cap_so,
+        "cap_gio": cap_gio, "huong": huong,
+        "khu_vuc": khu_vuc, "do_bo": do_bo,
+    }
 
-def format_khong_co_bao(gio):
+# ── Gửi Telegram ─────────────────────────────────────────────────────────────
+def _gui_mot(chat_id, method, payload, retries=3):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+    for i in range(1, retries+1):
+        try:
+            r = requests.post(url, json=payload, timeout=30)
+            if r.status_code == 200:
+                print(f"[TG/{method}] ✅ → {chat_id}"); return True
+            print(f"[TG/{method}] ❌ {r.text[:100]}"); return False
+        except requests.exceptions.Timeout:
+            print(f"[TG] ⏱ Timeout {i}/{retries}"); time.sleep(3)
+        except Exception as e:
+            print(f"[TG] ❌ {e}"); return False
+    return False
+
+def send_telegram(msg):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(msg); return
+    ids = [i.strip() for i in TELEGRAM_CHAT_ID.split(",") if i.strip()]
+    for cid in ids:
+        _gui_mot(cid, "sendMessage", {
+            "chat_id": cid, "text": msg,
+            "parse_mode": "HTML", "disable_web_page_preview": True,
+        })
+        if len(ids)>1: time.sleep(0.3)
+
+def send_telegram_photo(img_url, caption):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(f"[IMG] {img_url}"); return
+    ids = [i.strip() for i in TELEGRAM_CHAT_ID.split(",") if i.strip()]
+    for cid in ids:
+        _gui_mot(cid, "sendPhoto", {
+            "chat_id": cid,
+            "photo": img_url,
+            "caption": caption,
+            "parse_mode": "HTML",
+        })
+        if len(ids)>1: time.sleep(0.3)
+
+# ── Scrape NCHMF ──────────────────────────────────────────────────────────────
+def scrape_nchmf():
+    results = []
+    ban_tin_urls = []
+
+    for listing_url in NCHMF_LISTING:
+        soup = get_soup(listing_url)
+        if not soup: continue
+        text_listing = get_text_sach(soup)
+
+        if la_khong_co_su_kien(text_listing):
+            print(f"[NCHMF] '{listing_url[-40:]}': Đang cập nhật — không có sự kiện")
+            continue
+
+        for a in soup.find_all("a", href=True):
+            href = a.get("href","")
+            link_text = a.get_text(strip=True)
+            if not link_text or len(link_text) < 5: continue
+            if not any(k in link_text.lower() for k in
+                       ["bão","áp thấp","tropical","typhoon"]): continue
+            full = href if href.startswith("http") else BASE_NCHMF + href
+            if any(k in full for k in ["-2049-15","-2050-15","post.html",
+                                        "/tag/","/category/"]): continue
+            if full not in [u for u,_ in ban_tin_urls]:
+                ban_tin_urls.append((full, link_text))
+
+    print(f"[NCHMF] Tìm thấy {len(ban_tin_urls)} link bản tin")
+
+    for url, tieu_de in ban_tin_urls[:6]:
+        try:
+            soup = get_soup(url)
+            if not soup: continue
+            text = get_text_sach(soup)
+
+            if la_khong_co_su_kien(text):
+                print(f"[NCHMF] Bỏ qua (đang cập nhật): {tieu_de[:50]}")
+                continue
+            if not co_bao_that(text):
+                print(f"[NCHMF] Bỏ qua (không có từ khoá bão): {tieu_de[:50]}")
+                continue
+            if not du_noi_dung_khi_tuong(text):
+                print(f"[NCHMF] Bỏ qua (ít nội dung khí tượng): {tieu_de[:50]}")
+                continue
+
+            print(f"[NCHMF] ✅ Bản tin hợp lệ: {tieu_de[:50]}")
+            info = trich_xuat_bao(text, tieu_de)
+            anh_url = tim_anh_duong_di(soup, url)
+            if anh_url:
+                print(f"[NCHMF] 🖼 Tìm thấy ảnh: {anh_url[:60]}")
+
+            results.append({
+                "id":      make_id(tieu_de + url),
+                "tieu_de": tieu_de,
+                "url":     url,
+                "anh":     anh_url,
+                **info,
+            })
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"[NCHMF bài] {e}")
+
+    return results
+
+# ── Format báo cáo ────────────────────────────────────────────────────────────
+def format_bao_cao_co_su_kien(items, gio):
+    msg  = f"🚨 <b>BÁO CÁO THỜI TIẾT {gio}</b>\n"
+    msg += f"🕐 {fmt_time_vn()}\n{'━'*24}\n\n"
+    cap_max = max(x["cap_so"] for x in items)
+    if cap_max >= 5:   msg += "🔴 <b>RẤT NGUY HIỂM — SIÊU BÃO</b>\n\n"
+    elif cap_max >= 3: msg += "🟠 <b>NGUY HIỂM — CÓ BÃO ĐANG HOẠT ĐỘNG</b>\n\n"
+    elif cap_max >= 1: msg += "🟡 <b>CẦN THEO DÕI — CÓ ÁP THẤP NHIỆT ĐỚI</b>\n\n"
+    else:              msg += "🟡 <b>THEO DÕI — HỆ THỐNG THỜI TIẾT NGUY HIỂM</b>\n\n"
+
+    for i, x in enumerate(items[:3], 1):
+        cap_so = x["cap_so"]
+        icon = "🌀🌀" if cap_so>=5 else "🌀" if cap_so>=3 else "⚠️" if cap_so>=1 else "🔵"
+        msg += (
+            f"{icon} <b>{i}. {x['loai'].upper()}</b>\n"
+            f"{'─'*22}\n"
+            f"1️⃣ <b>Tên:</b> {x['ten']}\n"
+            f"2️⃣ <b>Cấp độ:</b> {x['loai']} ({x['cap_gio']})\n"
+            f"3️⃣ <b>Hướng di chuyển:</b> {x['huong']}\n"
+            f"4️⃣ <b>Khu vực ảnh hưởng:</b> {x['khu_vuc']}\n"
+            f"5️⃣ <b>Dự kiến đổ bộ VN:</b> {x['do_bo']}\n"
+            f"📡 Nguồn: Trung tâm Khí tượng Thủy văn Quốc gia\n"
+            f"🔗 <a href='{x['url']}'>Xem bản tin đầy đủ</a>\n\n"
+        )
+    msg += f"{'━'*24}\n⏰ Báo cáo tiếp theo: {gio_tiep_theo()} (GMT+7)"
+    return msg
+
+def format_bao_cao_khong_co(gio):
     return (
         f"📋 <b>BÁO CÁO THỜI TIẾT {gio}</b>\n"
         f"🕐 {fmt_time_vn()}\n"
         f"{'━'*24}\n\n"
-        f"🟢 <b>BÌNH THƯỜNG — KHÔNG CÓ BÃO / ÁP THẤP</b>\n\n"
-        f"✅ Trung tâm Khí tượng Thủy văn Quốc gia hiện\n"
-        f"   không phát bản tin bão hoặc áp thấp nhiệt đới.\n\n"
+        f"🟢 <b>BÌNH THƯỜNG — KHÔNG CÓ SỰ KIỆN BẤT THƯỜNG</b>\n\n"
+        f"✅ Không ghi nhận sự kiện nào:\n"
+        f"  • Không có bão\n"
+        f"  • Không có áp thấp nhiệt đới\n"
+        f"  • Biển Đông và vùng biển VN ổn định\n\n"
+        f"📡 Nguồn: Trung tâm Khí tượng Thủy văn Quốc gia (nchmf.gov.vn)\n"
         f"{'━'*24}\n"
-        f"📡 Nguồn: <a href='{NCHMF_BAO_URL}'>nchmf.gov.vn</a>\n"
         f"⏰ Báo cáo tiếp theo: {gio_tiep_theo()} (GMT+7)"
     )
 
@@ -333,54 +393,28 @@ def main():
     print(f"[Bot] Bắt đầu lúc {fmt_time_vn()}")
     state    = load_state()
     sent_ids = set(state.get("sent_ids", []))
-    gio      = gio_bao_cao()
+    gio      = gio_bao_cao_hien_tai()
 
-    ban_tins = scrape_nchmf()
+    items = scrape_nchmf()
+    print(f"[Bot] Tìm thấy {len(items)} bản tin hợp lệ")
 
-    if not ban_tins:
-        # Không có bão → gửi báo cáo bình thường
-        gui_telegram(format_khong_co_bao(gio))
-        print("[Bot] → Không có sự kiện, đã gửi báo cáo bình thường.")
+    if not items:
+        send_telegram(format_bao_cao_khong_co(gio))
+        print("[Bot] Gửi báo cáo: không có sự kiện")
     else:
-        # Có bão → gửi header + từng bản tin
-        header = (
-            f"🚨 <b>BÁO CÁO THỜI TIẾT {gio}</b>\n"
-            f"🕐 {fmt_time_vn()}\n"
-            f"{'━'*24}\n"
-            f"⚠️ <b>NCHMF PHÁT {len(ban_tins)} BẢN TIN BÃO/ÁP THẤP</b>\n"
-            f"{'━'*24}"
-        )
-        gui_telegram(header)
-        time.sleep(0.5)
-
-        new_ids = []
-        for i, bt in enumerate(ban_tins[:4], 1):
-            bid = make_id(bt["title"] + bt["url"])
-            if bid in sent_ids:
-                print(f"[Bot] Đã gửi trước đó: {bt['title'][:50]}")
-                continue
-
-            # Đọc bản tin đầy đủ
-            noi_dung, anh_trong_bai = doc_ban_tin_day_du(bt["url"])
-
-            # Kiểm tra bài có phải bản tin bão thật không
-            if not la_ban_tin_that(bt["title"], noi_dung):
-                print(f"[Bot] Bỏ qua (không phải bản tin bão thật): {bt['title'][:50]}")
-                continue
-
-            # Ảnh đường đi: ưu tiên thumbnail từ listing, sau đó từ trong bài
-            anh = bt.get("anh") or anh_trong_bai
-            if anh: print(f"[Bot] Ảnh đường đi: {anh}")
-
-            msg = format_ban_tin(bt["title"], noi_dung, bt["url"], i)
-            gui_telegram(msg, photo_url=anh)
-            new_ids.append(bid)
-            time.sleep(0.5)
-
-        if not new_ids:
-            print("[Bot] Tất cả bản tin đã gửi trước đó.")
-
-        state["sent_ids"] = (list(sent_ids) + new_ids)[-300:]
+        send_telegram(format_bao_cao_co_su_kien(items, gio))
+        for item in items[:3]:
+            anh = item.get("anh")
+            if anh:
+                caption = (
+                    f"🗺 <b>Đường đi dự báo: {item['ten']}</b>\n"
+                    f"📡 Nguồn: nchmf.gov.vn"
+                )
+                print(f"[Bot] Gửi ảnh: {anh[:60]}")
+                send_telegram_photo(anh, caption)
+                time.sleep(1)
+        new_ids = [x["id"] for x in items if x["id"] not in sent_ids]
+        state["sent_ids"] = (list(sent_ids) + new_ids)[-200:]
 
     state["last_run_vn"]  = fmt_time_vn()
     state["last_run_utc"] = datetime.now(timezone.utc).isoformat()
