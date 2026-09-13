@@ -1,4 +1,3 @@
-"""
 🌀 Storm Monitor Bot v21
 - CHỈ lấy từ nchmf.gov.vn
 - Chỉ gửi khi có nội dung thật về bão/ATNĐ (không phải "Đang cập nhật")
